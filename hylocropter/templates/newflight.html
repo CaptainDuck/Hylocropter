@@ -99,6 +99,27 @@
       {% endif %}
     </div>
 
+    <div class="card elev-sm" style="margin-bottom:16px">
+      <span class="card-kicker">How this flight is read</span>
+      <div class="control-group" style="margin:0">
+        <div class="control-head">
+          <span>Hide pixels too dark to read</span>
+          <span class="val" id="nf-mask-label">{{ 'On' if cfg.mask_low_signal else 'Off' }}</span>
+        </div>
+        <div class="toggle-pair">
+          <button class="btn btn-secondary {{ 'is-on' if not cfg.mask_low_signal }}"
+                  data-nf-mask="off">Off</button>
+          <button class="btn btn-secondary {{ 'is-on' if cfg.mask_low_signal }}"
+                  data-nf-mask="on">On</button>
+        </div>
+        <div class="control-note">Pixels whose NIR + blue falls below
+          <strong>{{ cfg.min_signal }}</strong> are left unmeasured instead of
+          coloured, so shadow between the pads doesn't get mapped as healthy
+          growth. Every photo in this flight records the setting it was taken
+          under. Change the floor itself on <a href="/debug">Debug</a>.</div>
+      </div>
+    </div>
+
     <button class="btn btn-primary btn-block" style="padding:13px" id="start-session">
       Get the camera ready</button>
     <p style="margin:10px 2px 0;font-size:12.5px;color:color-mix(in srgb, var(--color-text) 55%, transparent)">

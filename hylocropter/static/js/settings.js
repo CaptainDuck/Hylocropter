@@ -151,6 +151,26 @@
     }, 600, { runHidden: true });
   }
 
+  // Switching location loads that site's centre and size server-side, so the
+  // simplest correct thing is to let the page re-render from the new values
+  // rather than trying to patch four fields, the plan summary and the inset map
+  // by hand and getting one of them wrong.
+  const siteEl = document.getElementById('s-site');
+  if (siteEl) {
+    siteEl.addEventListener('change', async function () {
+      siteEl.disabled = true;
+      try {
+        await HC.api('/api/settings', {
+          method: 'PATCH', body: { active_site: siteEl.value }
+        });
+        location.reload();
+      } catch (err) {
+        siteEl.disabled = false;
+        HC.toast('Could not switch location: ' + err.message, true);
+      }
+    });
+  }
+
   const dlBtn = document.getElementById('tile-download');
   if (dlBtn) {
     dlBtn.addEventListener('click', async function () {

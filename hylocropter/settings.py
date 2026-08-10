@@ -49,6 +49,12 @@ DEFAULTS = {
     "nir_leak_coef": bndvi.DEFAULT_NIR_LEAK_COEF,
     "threshold_healthy": bndvi.DEFAULT_THRESHOLD_HEALTHY,
     "threshold_moderate": bndvi.DEFAULT_THRESHOLD_MODERATE,
+    # Hide pixels carrying too little light for the index to mean anything. On by
+    # default: below the floor BNDVI reports a confident "healthy" from sensor
+    # noise, and a wrong reading a farmer would act on is worse than a gap in the
+    # map. The floor itself is a judgement call -- RESEARCH-GAPS.md section 11.
+    "mask_low_signal": True,
+    "min_signal": bndvi.DEFAULT_MIN_SIGNAL,
 
     # ── debug preview ─────────────────────────────────────────────────────
     "preview_fps": 12,
@@ -66,6 +72,30 @@ DEFAULTS = {
     "plot_lat": 14.1265,
     "plot_lon": 121.0768,
     "plot_box_m": 620,                   # ~38 ha of imagery to search within
+
+    # Saved vicinities, and which one is loaded. The `plot_` keys above stay the
+    # *live* values -- every consumer already reads them -- and this list is the
+    # set you can switch between. Selecting one copies it into `plot_`; editing
+    # the `plot_` values writes back into the selected entry, so the two cannot
+    # drift apart.
+    #
+    # Tiles are stored as a global {z}/{x}/{y} tree, so several vicinities coexist
+    # on disk with no conflict and no per-site bookkeeping -- downloading a second
+    # area simply adds tiles the first one didn't have.
+    #
+    # Unlike survey_blocks these ARE defaulted, and that is not a contradiction:
+    # a vicinity is only ground to *look at*, so a wrong guess wastes a download.
+    # A survey block is ground to *fly*, where a wrong guess flies the drone over
+    # someone else's field.
+    "sites": [
+        {"id": "farm", "name": "Dragon fruit farm (Tanauan)",
+         "lat": 14.1265, "lon": 121.0768, "box_m": 620},
+        # De La Salle Lipa, 13°56'34"N 121°08'52"E. Practice ground: the campus is
+        # where the rig gets tested, and the imagery for Tanauan is no use there.
+        {"id": "dlsl", "name": "De La Salle Lipa (campus)",
+         "lat": 13.94291, "lon": 121.14773, "box_m": 1500},
+    ],
+    "active_site": "farm",
 
     # ── the survey blocks ─────────────────────────────────────────────────
     # The patches inside that vicinity the drone actually flies. A list, because
@@ -121,6 +151,9 @@ _LIMITS = {
     "fov_v_deg": (10.0, 180.0),
     "threshold_healthy": (-0.9, 0.95),
     "threshold_moderate": (-0.95, 0.9),
+    # 0 disables the floor without turning the toggle off; 128 is already half of
+    # the maximum possible NIR+blue sum, well past anything defensible.
+    "min_signal": (0, 128),
     "preview_fps": (1, 24),
     "plot_lat": (-90.0, 90.0),
     "plot_lon": (-180.0, 180.0),
@@ -132,7 +165,7 @@ _LIMITS = {
     "tile_zoom_max": (10, 21),
 }
 
-_INTS = {"exposure_us", "preview_fps", "plot_box_m",
+_INTS = {"exposure_us", "preview_fps", "plot_box_m", "min_signal",
          "trigger_distance_m", "trigger_interval_s", "mavlink_baud",
          "tile_zoom_min", "tile_zoom_max", "setup_step"}
 
@@ -140,6 +173,45 @@ _INTS = {"exposure_us", "preview_fps", "plot_box_m",
 # it stops a runaway client turning settings.json into something the Pi has to
 # parse on every page load.
 MAX_SURVEY_BLOCKS = 24
+
+# Same idea for saved vicinities. Nobody has twelve sites; this just bounds what a
+# hand-edited settings.json can do.
+MAX_SITES = 12
+
+
+def _slug(text):
+    out = "".join(c if c.isalnum() else "-" for c in text.lower()).strip("-")
+    while "--" in out:
+        out = out.replace("--", "-")
+    return out[:32]
+
+
+def normalise_site(entry, index=0):
+    """Validate one saved vicinity. Returns None if it is not usable.
+
+    The single gate for sites, the way flights.normalise_block() is for blocks:
+    values loaded from disk go through it too, so a hand-edited settings.json
+    cannot put a site at latitude 900 and send the map somewhere impossible.
+    """
+    if not isinstance(entry, dict):
+        return None
+    try:
+        lat = float(entry["lat"])
+        lon = float(entry["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+        return None
+    lo, hi = _LIMITS["plot_box_m"]
+    try:
+        box = int(float(entry.get("box_m") or DEFAULTS["plot_box_m"]))
+    except (TypeError, ValueError):
+        box = DEFAULTS["plot_box_m"]
+    name = str(entry.get("name") or "").strip() or f"Location {index + 1}"
+    site_id = str(entry.get("id") or "").strip() or _slug(name) or f"s{index + 1}"
+    return {"id": site_id, "name": name,
+            "lat": round(lat, 6), "lon": round(lon, 6),
+            "box_m": min(max(box, lo), hi)}
 
 _lock = threading.Lock()
 
@@ -204,6 +276,11 @@ class Settings:
                     "survey_blocks", self._values["survey_blocks"])
             except (TypeError, ValueError):
                 self._values["survey_blocks"] = []
+        # Same for sites: a hand-edited file must not put the map at latitude 900.
+        try:
+            self._values["sites"] = self._coerce("sites", self._values["sites"])
+        except (TypeError, ValueError):
+            self._values["sites"] = list(DEFAULTS["sites"])
         return self._values
 
     def save(self):
@@ -264,12 +341,69 @@ class Settings:
             applied["tile_zoom_min"] = self._values["tile_zoom_min"]
             warnings.append("minimum zoom cannot exceed maximum — adjusted it")
 
+        # Keep the saved list and the live vicinity in step. Switching site loads
+        # it; editing the coordinates updates whichever site is loaded. Without
+        # this the dropdown would quietly hand back stale coordinates the next
+        # time you selected it -- and you would download tiles for the wrong place.
+        if "active_site" in applied:
+            applied.update(self._load_active_site())
+        elif {"plot_lat", "plot_lon", "plot_box_m"} & set(applied):
+            self._store_active_site()
+
         if applied:
             self.save()
         return applied, warnings
 
+    # ── saved vicinities ──────────────────────────────────────────────────
+
+    def active_site(self):
+        """The selected site, or None if the id doesn't match anything.
+
+        Falls back to the first site rather than nothing, so a settings.json
+        naming a deleted site still puts the map somewhere real.
+        """
+        sites = self._values.get("sites") or []
+        for site in sites:
+            if site["id"] == self._values.get("active_site"):
+                return site
+        return sites[0] if sites else None
+
+    def _load_active_site(self):
+        """Copy the selected site into the live plot_ values."""
+        site = self.active_site()
+        if site is None:
+            return {}
+        self._values["active_site"] = site["id"]
+        self._values["plot_lat"] = site["lat"]
+        self._values["plot_lon"] = site["lon"]
+        self._values["plot_box_m"] = site["box_m"]
+        return {"active_site": site["id"], "plot_lat": site["lat"],
+                "plot_lon": site["lon"], "plot_box_m": site["box_m"]}
+
+    def _store_active_site(self):
+        """Write the live plot_ values back into the selected site."""
+        site = self.active_site()
+        if site is None:
+            return
+        site["lat"] = round(float(self._values["plot_lat"]), 6)
+        site["lon"] = round(float(self._values["plot_lon"]), 6)
+        site["box_m"] = int(self._values["plot_box_m"])
+
     def _coerce(self, key, raw):
         default = DEFAULTS[key]
+        if key == "sites":
+            if not isinstance(raw, (list, tuple)):
+                raise ValueError("sites must be a list")
+            out, seen = [], set()
+            for i, entry in enumerate(raw[:MAX_SITES]):
+                site = normalise_site(entry, index=i)
+                if site is None:
+                    continue
+                while site["id"] in seen:
+                    site["id"] += "_"
+                seen.add(site["id"])
+                out.append(site)
+            return out
         if key == "survey_blocks":
             if raw is None:
                 return []
@@ -345,6 +479,8 @@ class Settings:
             "nir_leak_coef": self._values["nir_leak_coef"],
             "threshold_healthy": self._values["threshold_healthy"],
             "threshold_moderate": self._values["threshold_moderate"],
+            "mask_low_signal": self._values["mask_low_signal"],
+            "min_signal": self._values["min_signal"],
             "save_array": self._values["save_array"],
             "capture_format": self._values["capture_format"],
             "neutralise_isp": self._values["neutralise_isp"],

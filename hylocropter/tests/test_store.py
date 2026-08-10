@@ -434,3 +434,83 @@ def test_the_vicinity_is_much_larger_than_any_block(config):
     biggest = max(flights.block_dimensions(b)["area_ha"]
                   for b in config.get("survey_blocks"))
     assert vicinity_ha > biggest * 10
+
+
+# ── the low-signal mask setting ──────────────────────────────────────────────
+
+def test_the_signal_floor_is_clamped_like_every_other_number(config):
+    applied, warnings = config.update({"min_signal": 9999})
+    assert applied["min_signal"] == 128
+    assert any("clamped" in w for w in warnings)
+
+
+def test_the_signal_floor_stays_an_integer(config):
+    """Truncated, not rounded -- the same int() every other integer setting gets.
+    The slider only ever sends whole numbers, so consistency wins over the extra
+    half-count of precision."""
+    applied, _ = config.update({"min_signal": 24.7})
+    assert applied["min_signal"] == 24
+    assert isinstance(applied["min_signal"], int)
+
+
+def test_the_mask_reaches_a_capture(config):
+    """analysis_kwargs is what every web capture is taken with, so a setting that
+    does not appear here is a setting the dashboard silently ignores."""
+    kwargs = config.analysis_kwargs()
+    assert kwargs["mask_low_signal"] is True
+    assert kwargs["min_signal"] == bndvi.DEFAULT_MIN_SIGNAL
+    config.update({"mask_low_signal": False})
+    assert config.analysis_kwargs()["mask_low_signal"] is False
+
+
+# ── saved vicinities ─────────────────────────────────────────────────────────
+#
+# The `plot_` keys are the live vicinity every consumer reads; `sites` is the set
+# you can switch between. The pair has to stay in step, or the dropdown hands
+# back stale coordinates and you download imagery for the wrong place.
+
+def test_switching_location_loads_its_coordinates(config):
+    applied, _ = config.update({"active_site": "dlsl"})
+    assert applied["plot_lat"] == pytest.approx(13.94291)
+    assert applied["plot_box_m"] == 1500
+    assert config.get("plot_lon") == pytest.approx(121.14773)
+
+
+def test_editing_the_vicinity_writes_back_to_the_selected_location(config):
+    config.update({"active_site": "dlsl"})
+    config.update({"plot_box_m": 900})
+    config.update({"active_site": "farm"})
+    assert config.get("plot_box_m") == 620, "the farm keeps its own size"
+    config.update({"active_site": "dlsl"})
+    assert config.get("plot_box_m") == 900, \
+        "the edit must have stuck to the site it was made on"
+
+
+def test_an_unknown_active_site_still_lands_somewhere_real(config):
+    config.update({"sites": [{"id": "only", "name": "Only", "lat": 1.0,
+                              "lon": 2.0, "box_m": 300}]})
+    config._values["active_site"] = "deleted-one"     # as a stale file would have
+    assert config.active_site()["id"] == "only"
+
+
+def test_an_impossible_location_is_rejected_not_stored(config):
+    applied, _ = config.update({"sites": [
+        {"id": "bad", "name": "Off the planet", "lat": 900, "lon": 0},
+        {"id": "good", "name": "Fine", "lat": 13.9, "lon": 121.1, "box_m": 400},
+    ]})
+    assert [s["id"] for s in applied["sites"]] == ["good"]
+
+
+def test_a_location_size_is_clamped_like_the_vicinity(config):
+    applied, _ = config.update({"sites": [
+        {"id": "huge", "name": "Huge", "lat": 0, "lon": 0, "box_m": 99999}]})
+    assert applied["sites"][0]["box_m"] == 4000
+
+
+def test_duplicate_location_ids_are_made_unique(config):
+    applied, _ = config.update({"sites": [
+        {"id": "x", "name": "One", "lat": 1, "lon": 1},
+        {"id": "x", "name": "Two", "lat": 2, "lon": 2},
+    ]})
+    ids = [s["id"] for s in applied["sites"]]
+    assert len(set(ids)) == 2, "two sites sharing an id would make the picker ambiguous"

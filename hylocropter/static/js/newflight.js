@@ -33,6 +33,21 @@
   });
   paintTriggerNote();
 
+  // Same setting the Debug view exposes, surfaced here because it changes what
+  // every photo in the flight will mean — and this is the last screen before
+  // the drone leaves the ground.
+  HC.$$('[data-nf-mask]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      const on = btn.dataset.nfMask === 'on';
+      HC.$$('[data-nf-mask]').forEach(function (b) {
+        b.classList.toggle('is-on', (b.dataset.nfMask === 'on') === on);
+      });
+      const label = document.getElementById('nf-mask-label');
+      if (label) label.textContent = on ? 'On' : 'Off';
+      HC.saveSetting({ mask_low_signal: on });
+    });
+  });
+
   const override = document.getElementById('override-trigger');
   if (override) {
     override.addEventListener('click', function () {

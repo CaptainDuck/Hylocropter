@@ -217,6 +217,22 @@
 
     <div class="hr"></div>
 
+    <div class="field" style="margin-bottom:12px">
+      <label for="s-site">Location</label>
+      <select class="input" id="s-site">
+        {% for site in cfg.sites %}
+          <option value="{{ site.id }}" {{ 'selected' if site.id == cfg.active_site }}>
+            {{ site.name }} · {{ site.box_m }} m
+          </option>
+        {% endfor %}
+      </select>
+      <span style="font-size:12.5px;display:block;margin-top:6px;color:color-mix(in srgb, var(--color-text) 58%, transparent)">
+        Switching loads that location's centre and size below. Tiles for every
+        location share one folder, so downloading a second area adds to the map
+        rather than replacing it — you can keep both.
+      </span>
+    </div>
+
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">
       <div class="field">
         <label for="s-lat">Vicinity centre latitude</label>

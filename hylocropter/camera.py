@@ -20,13 +20,17 @@ Two jobs:
    they all come from one array. The Pi's only job per frame is grab →
    downsample → send.
 
-The preview reuses the 640x480 `lores` stream that bndvi.py has always
-configured and never read.
+The preview runs its own 640x480 RGB888 `main` stream and downsamples from it.
+It deliberately does not use a `lores` stream: on the Pi 4's VC4 pipeline lores
+must be YUV420, and converting that back to RGB would run the very colour matrix
+that `neutralise_isp` exists to switch off -- green would bleed into both the NIR
+and the blue plane, which is precisely the measurement this view has to protect.
 """
 
 import logging
 import threading
 import time
+from concurrent.futures import TimeoutError as _FutureTimeout
 
 import numpy as np
 
@@ -175,9 +179,22 @@ class CameraService:
 
         with self._lock:
             cam = self._open_locked()
-            request = cam.capture_request()
+            # capture_request() waits forever by default. If the sensor stops
+            # delivering -- a knocked CSI ribbon, a stalled pipeline -- this
+            # thread blocks holding _lock, so the preview freezes AND every
+            # capture blocks behind it, with no way back but restarting the
+            # process. That is unacceptable in flight, so bound the wait and
+            # drop the camera; the next pass reopens it.
+            job = cam.capture_request(wait=False)
             try:
-                frame = request.make_array("lores")
+                request = cam.wait(job, timeout=FRAME_WAIT_S)
+            except (_FutureTimeout, TimeoutError):
+                self._close_locked()
+                raise RuntimeError(
+                    f"camera delivered no frame in {FRAME_WAIT_S:.0f}s -- reopening. "
+                    f"If this repeats, check the CSI ribbon.")
+            try:
+                frame = request.make_array("main")
                 metadata = request.get_metadata()
             finally:
                 request.release()
@@ -207,11 +224,23 @@ class CameraService:
             available=cam.camera_controls)
         config = cam.create_preview_configuration(
             main={"size": (640, 480), "format": "RGB888"},
-            lores={"size": (320, 240), "format": "RGB888"},
             controls=self._wanted,
         )
-        cam.configure(config)
-        cam.start()
+        try:
+            cam.configure(config)
+            cam.start()
+        except Exception:
+            # Both of these can fail against a live device. `cam` already holds
+            # the camera even when it never reached a usable state, and the
+            # traceback keeps it referenced, so without this close() the device
+            # stays claimed and every later open dies with "__init__ sequence
+            # did not complete" until the process restarts -- one transient
+            # failure would wedge the feed permanently.
+            try:
+                cam.close()
+            except Exception:
+                pass
+            raise
         time.sleep(0.4)
         self._picam = cam
         log.info("preview camera opened")

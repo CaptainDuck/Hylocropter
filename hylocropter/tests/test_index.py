@@ -379,3 +379,83 @@ def test_python_and_javascript_colormaps_still_agree():
     js_bands = {m[0]: (int(m[1]), int(m[2]), int(m[3])) for m in re.findall(
         r"(\w+)\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)", bands_block)}
     assert js_bands == bndvi.BAND_COLORS
+
+
+# ── the low-signal mask ──────────────────────────────────────────────────────
+#
+# Below a certain amount of light BNDVI stops measuring the plant and starts
+# measuring the gap between two black levels. Because NIR sits above blue at the
+# noise floor, that error is systematically *positive* -- an unlit frame reads a
+# confident "healthy" rather than obviously broken. These pin the guard.
+
+def test_an_unlit_frame_reads_healthy_without_the_mask():
+    """The failure the mask exists for. If this ever stops being true the mask
+    is solving a problem that no longer exists -- check before deleting it."""
+    noise = frame(nir=2, green=1, blue=0)
+    assert bndvi.bndvi_stats(bndvi.compute_bndvi(noise))["mean"] > 0.9
+
+
+def test_the_mask_catches_the_noise_floor_and_spares_a_lit_frame():
+    assert bndvi.low_signal_mask(frame(2, 1, 0)).all()
+    assert not bndvi.low_signal_mask(frame(200, 20, 60)).any()
+
+
+def test_the_mask_tests_the_denominator_not_the_brightness():
+    """A dark but genuinely measurable target must survive.
+
+    NIR 12 + blue 10 sums to 22, over the floor of 20, even though every channel
+    is dim -- masking on overall brightness instead would have thrown it away.
+    """
+    assert not bndvi.low_signal_mask(frame(12, 4, 10)).any()
+
+
+def test_masked_pixels_are_left_out_of_the_statistics():
+    a = frame(200, 20, 60, shape=(4, 4))
+    a[0, :, 0] = 2            # top row on the noise floor
+    a[0, :, 2] = 0
+    b = bndvi.compute_bndvi(a)
+    mask = bndvi.low_signal_mask(a)
+    lit = bndvi.bndvi_stats(b, mask=mask)
+    assert lit["masked_pct"] == pytest.approx(25.0)
+    # The mean is the lit pixels' own value, not dragged up by the noise row.
+    assert lit["mean"] == pytest.approx(bndvi.bndvi_stats(b[1:])["mean"])
+
+
+def test_a_frame_with_nothing_readable_reports_no_reading():
+    """None, not zero and not NaN: nothing was measured, so there is no number.
+    Zero would classify as 'stressed' and NaN would poison the flight average."""
+    dark = frame(2, 1, 0)
+    stats = bndvi.bndvi_stats(bndvi.compute_bndvi(dark),
+                              mask=bndvi.low_signal_mask(dark))
+    assert stats["mean"] is None
+    assert stats["masked_pct"] == 100.0
+    assert stats["healthy_pct"] == 0.0
+
+
+def test_masking_adds_alpha_and_leaves_the_colours_alone():
+    """Regression: the colormap loop used to bind a local called `mask`, which
+    shadowed the caller's and made entirely the wrong pixels transparent."""
+    a = frame(200, 20, 60, shape=(4, 4))
+    a[0, :, 0] = 2
+    a[0, :, 2] = 0
+    b = bndvi.compute_bndvi(a)
+    mask = bndvi.low_signal_mask(a)
+
+    plain = bndvi.bndvi_to_rgb(b)
+    assert plain.shape[2] == 3, "no mask must stay RGB"
+
+    rgba = bndvi.bndvi_to_rgb(b, mask=mask)
+    assert rgba.shape[2] == 4
+    assert (rgba[0, :, 3] == 0).all(), "the masked row must be transparent"
+    assert (rgba[1:, :, 3] == 255).all(), "everything else must be opaque"
+    assert (rgba[1:, :, :3] == plain[1:]).all(), "visible colours must not move"
+
+
+def test_band_render_masks_the_same_pixels():
+    a = frame(200, 20, 60, shape=(2, 2))
+    a[0, :, 0] = 2
+    a[0, :, 2] = 0
+    b = bndvi.compute_bndvi(a)
+    rgba = bndvi.bndvi_to_bands_rgb(b, mask=bndvi.low_signal_mask(a))
+    assert (rgba[0, :, 3] == 0).all()
+    assert (rgba[1, :, 3] == 255).all()

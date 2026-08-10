@@ -33,6 +33,8 @@
       k: cfg.nir_leak_coef,
       tHealthy: cfg.threshold_healthy,
       tModerate: cfg.threshold_moderate,
+      maskLowSignal: cfg.mask_low_signal,
+      minSignal: cfg.min_signal,
       onFrame: paintFeeds
     });
 
@@ -322,6 +324,16 @@
         const s = feed.stats();
         if (!s) {
           setVerdict('plant', 'bad', 'No live frame to read.');
+          return;
+        }
+        if (s.mean === null) {
+          // Every pixel was below the signal floor, so there is no reading to
+          // judge. Saying "strongly negative" here would blame the channel
+          // mapping for what is really just darkness.
+          setVerdict('plant', 'bad',
+            'The whole frame is too dark to read — nothing here carries enough ' +
+            'signal to measure. Shoot in daylight, or raise the exposure and ' +
+            'gain. Indoor lighting emits almost no NIR.');
           return;
         }
         if (feed.source === 'synthetic') {

@@ -132,6 +132,30 @@
       </div>
 
       <div class="control-group">
+        <div class="control-head">
+          <span>Hide pixels too dark to read</span>
+          <span class="val" id="mask-label">{{ 'On' if cfg.mask_low_signal else 'Off' }}</span>
+        </div>
+        <div class="toggle-pair">
+          <button class="btn btn-secondary {{ 'is-on' if not cfg.mask_low_signal }}"
+                  data-mask="off">Off</button>
+          <button class="btn btn-secondary {{ 'is-on' if cfg.mask_low_signal }}"
+                  data-mask="on">On</button>
+        </div>
+        <div class="control-sub">
+          <span>Signal floor (NIR + blue)</span>
+          <span class="val" id="min-signal-label">{{ cfg.min_signal }}</span>
+        </div>
+        <input type="range" id="min-signal" min="0" max="128" step="1"
+               value="{{ cfg.min_signal }}" aria-label="Minimum signal floor">
+        <div class="control-note">Below this the index divides noise by noise, and
+          because NIR sits above blue at the noise floor it reads
+          <strong>healthy</strong> — a dark frame paints confidently green.
+          Masked pixels go transparent rather than coloured. The number is a
+          judgement call, not a standard.</div>
+      </div>
+
+      <div class="control-group">
         <div class="control-head"><span>Calibrate from a white card</span></div>
         <div class="control-note" style="margin-bottom:6px">
           White reflects about equally in NIR and visible, so it should read

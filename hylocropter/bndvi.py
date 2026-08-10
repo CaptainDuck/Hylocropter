@@ -84,6 +84,22 @@ DEFAULT_COLOUR_GAINS = (1.0, 1.0)
 DEFAULT_THRESHOLD_HEALTHY = 0.3
 DEFAULT_THRESHOLD_MODERATE = 0.1
 
+# Below this sum of NIR + visible blue, BNDVI stops measuring reflectance and
+# starts measuring the gap between two black levels. Because the NIR (red) Bayer
+# channel sits higher than blue at the noise floor -- more dark current, and the
+# gel passes NIR broadly while blocking nearly all visible blue -- that error is
+# systematically *positive*. An unlit frame therefore reads a confident "healthy"
+# rather than obviously broken, which is the dangerous direction: it is exactly
+# the reading a farmer would act on.
+#
+# 20 (out of a 0-510 possible sum) is deliberately conservative -- it catches
+# pixels on the noise floor and little else. It is a judgement call, not a
+# sourced constant: operational remote sensing prevents this condition with
+# radiometric calibration and shadow masking rather than flooring the ratio, and
+# the literature warns that fixed thresholds are dataset-dependent. Hence the
+# setting, and RESEARCH-GAPS.md section 11.
+DEFAULT_MIN_SIGNAL = 20
+
 # NIR-leakage correction: blue Bayer pixels also pick up some NIR. We
 # approximate visible_blue as max(eps, B - k*R) where k is the NIR
 # responsivity ratio of the blue vs red Bayer pixels.
@@ -123,6 +139,10 @@ BAND_COLORS = {
     "moderate": (224, 160, 32),
     "stressed": (193, 68, 46),
 }
+
+# The dashboard's paper colour. Rendered figures and any flattened transparency
+# sit on it so a saved PNG has no visible seam against the page.
+PAGE_BACKGROUND = (245, 234, 216)       # #f5ead8
 
 
 class CameraUnavailable(RuntimeError):
@@ -618,6 +638,39 @@ def synthetic_frame(resolution=DEFAULT_RESOLUTION, scene="mixed", jitter=0.0,
 
 # ── BNDVI calculation ────────────────────────────────────────────────────────
 
+def _index_channels(rgb_array, correct_nir_leakage=False,
+                    nir_leak_coef=DEFAULT_NIR_LEAK_COEF):
+    """The two channels the index actually divides: NIR, and visible blue.
+
+    Shared by compute_bndvi() and low_signal_mask() so the mask is guaranteed to
+    test the same denominator the index divides by. If these ever drifted apart
+    the mask would hide the wrong pixels, which is worse than not masking at all.
+    """
+    nir = rgb_array[:, :, 0].astype(np.float32)
+    blue_raw = rgb_array[:, :, 2].astype(np.float32)
+    if correct_nir_leakage:
+        # clamp to a small positive value so dense-vegetation pixels
+        # (where k*R can exceed B) don't blow up or flip sign
+        vis = np.clip(blue_raw - float(nir_leak_coef) * nir, 1.0, None)
+    else:
+        vis = blue_raw
+    return nir, vis
+
+
+def low_signal_mask(rgb_array, min_signal=DEFAULT_MIN_SIGNAL,
+                    correct_nir_leakage=False,
+                    nir_leak_coef=DEFAULT_NIR_LEAK_COEF):
+    """True where there is too little light for BNDVI to mean anything.
+
+    Tests `NIR + visible blue` -- the index's own denominator -- rather than
+    overall brightness, because the denominator is precisely what the noise gets
+    divided into. A genuinely dark but well-measured target is fine; two channels
+    sitting on the noise floor are not.
+    """
+    nir, vis = _index_channels(rgb_array, correct_nir_leakage, nir_leak_coef)
+    return (nir + vis) < float(min_signal)
+
+
 def compute_bndvi(rgb_array, correct_nir_leakage=False,
                   nir_leak_coef=DEFAULT_NIR_LEAK_COEF):
     """
@@ -634,15 +687,7 @@ def compute_bndvi(rgb_array, correct_nir_leakage=False,
         vis_blue = max(eps, B - k * R)
         BNDVI    = (R - vis_blue) / (R + vis_blue)
     """
-    nir = rgb_array[:, :, 0].astype(np.float32)
-    blue_raw = rgb_array[:, :, 2].astype(np.float32)
-
-    if correct_nir_leakage:
-        # clamp to a small positive value so dense-vegetation pixels
-        # (where k*R can exceed B) don't blow up or flip sign
-        vis = np.clip(blue_raw - float(nir_leak_coef) * nir, 1.0, None)
-    else:
-        vis = blue_raw
+    nir, vis = _index_channels(rgb_array, correct_nir_leakage, nir_leak_coef)
 
     # A black pixel gives 0/0. np.where would still pick the right answer, but it
     # evaluates both branches, so the divide runs anyway and numpy warns on every
@@ -698,18 +743,36 @@ def solve_leak_coef(nir_mean, blue_mean):
 
 
 def bndvi_stats(bndvi, threshold_healthy=DEFAULT_THRESHOLD_HEALTHY,
-                threshold_moderate=DEFAULT_THRESHOLD_MODERATE):
-    """Summary statistics. Percentages are 0-100 and sum to ~100."""
+                threshold_moderate=DEFAULT_THRESHOLD_MODERATE, mask=None):
+    """Summary statistics. Percentages are 0-100 and sum to ~100.
+
+    `mask` marks pixels with too little signal to mean anything (see
+    low_signal_mask). They are excluded from every figure rather than counted as
+    stressed -- averaging them in would drag the mean toward whatever the noise
+    floor happens to say, which is the whole thing the mask exists to prevent.
+    `masked_pct` reports how much of the frame that was, so a capture that is
+    mostly noise cannot look like a confident measurement of a small area.
+    """
+    valid = bndvi if mask is None else bndvi[~mask]
+    masked_pct = 0.0 if mask is None else float(np.mean(mask) * 100)
+    if valid.size == 0:
+        # Everything was below the floor. Report the emptiness rather than
+        # inventing a number -- np.mean of an empty array is nan and would
+        # propagate into the record, the map and the classification.
+        return {"min": None, "max": None, "mean": None, "median": None,
+                "std": None, "healthy_pct": 0.0, "moderate_pct": 0.0,
+                "stressed_pct": 0.0, "masked_pct": masked_pct}
     return {
-        "min": float(np.min(bndvi)),
-        "max": float(np.max(bndvi)),
-        "mean": float(np.mean(bndvi)),
-        "median": float(np.median(bndvi)),
-        "std": float(np.std(bndvi)),
-        "healthy_pct": float(np.mean(bndvi > threshold_healthy) * 100),
-        "moderate_pct": float(np.mean((bndvi >= threshold_moderate)
-                                      & (bndvi <= threshold_healthy)) * 100),
-        "stressed_pct": float(np.mean(bndvi < threshold_moderate) * 100),
+        "min": float(np.min(valid)),
+        "max": float(np.max(valid)),
+        "mean": float(np.mean(valid)),
+        "median": float(np.median(valid)),
+        "std": float(np.std(valid)),
+        "healthy_pct": float(np.mean(valid > threshold_healthy) * 100),
+        "moderate_pct": float(np.mean((valid >= threshold_moderate)
+                                      & (valid <= threshold_healthy)) * 100),
+        "stressed_pct": float(np.mean(valid < threshold_moderate) * 100),
+        "masked_pct": masked_pct,
     }
 
 
@@ -833,28 +896,48 @@ def exposure_warning(rgb_array):
 
 # ── false-colour maps ────────────────────────────────────────────────────────
 
-def bndvi_to_rgb(bndvi):
-    """Map BNDVI [-1, 1] to RGB using BNDVI_COLOR_STOPS (smooth colormap)."""
+def _with_alpha(rgb, mask):
+    """RGB -> RGBA, fully transparent wherever `mask` is True.
+
+    Unmeasurable pixels have to read as *absent*, not as some colour: the same
+    rule the map already follows when an unvisited grid cell stays null rather
+    than being painted mid-range. Painting them would invent ground truth.
+    """
+    if mask is None:
+        return rgb
+    rgba = np.dstack([rgb, np.full(rgb.shape[:2], 255, dtype=np.uint8)])
+    rgba[mask, 3] = 0
+    return rgba
+
+
+def bndvi_to_rgb(bndvi, mask=None):
+    """Map BNDVI [-1, 1] to RGB using BNDVI_COLOR_STOPS (smooth colormap).
+
+    With `mask`, returns RGBA transparent where the signal was too low to read.
+    """
     out = np.empty(bndvi.shape + (3,), dtype=np.uint8)
     stops = BNDVI_COLOR_STOPS
     out[...] = np.array(stops[0][1], dtype=np.uint8)
     for i in range(len(stops) - 1):
         v0, c0 = stops[i]
         v1, c1 = stops[i + 1]
-        mask = (bndvi >= v0) & (bndvi < v1)
-        if not mask.any():
+        # NB: not `mask` -- that is the caller's low-signal mask, and shadowing
+        # it here would make the wrong pixels transparent.
+        in_band = (bndvi >= v0) & (bndvi < v1)
+        if not in_band.any():
             continue
         t = (bndvi - v0) / (v1 - v0)
         for ch in range(3):
             out[..., ch] = np.where(
-                mask, c0[ch] + t * (c1[ch] - c0[ch]), out[..., ch]
+                in_band, c0[ch] + t * (c1[ch] - c0[ch]), out[..., ch]
             ).astype(np.uint8)
     out[bndvi >= stops[-1][0]] = np.array(stops[-1][1], dtype=np.uint8)
-    return out
+    return _with_alpha(out, mask)
 
 
 def bndvi_to_bands_rgb(bndvi, threshold_healthy=DEFAULT_THRESHOLD_HEALTHY,
-                       threshold_moderate=DEFAULT_THRESHOLD_MODERATE):
+                       threshold_moderate=DEFAULT_THRESHOLD_MODERATE,
+                       mask=None):
     """Flat three-colour rendering at the given thresholds."""
     out = np.empty(bndvi.shape + (3,), dtype=np.uint8)
     out[...] = np.array(BAND_COLORS["stressed"], dtype=np.uint8)
@@ -862,7 +945,7 @@ def bndvi_to_bands_rgb(bndvi, threshold_healthy=DEFAULT_THRESHOLD_HEALTHY,
                                                 dtype=np.uint8)
     out[bndvi > threshold_healthy] = np.array(BAND_COLORS["healthy"],
                                               dtype=np.uint8)
-    return out
+    return _with_alpha(out, mask)
 
 
 def matplotlib_colormap():
@@ -878,7 +961,7 @@ def matplotlib_colormap():
 
 def render_outputs(rgb_array, bndvi, bndvi_rgb, output_dir, capture_id,
                    save_array=False, threshold_healthy=DEFAULT_THRESHOLD_HEALTHY,
-                   threshold_moderate=DEFAULT_THRESHOLD_MODERATE):
+                   threshold_moderate=DEFAULT_THRESHOLD_MODERATE, mask=None):
     """Save raw, heatmap, false-colour, thumbnail (+ optional .npz).
     Returns a dict of relative filenames."""
     import matplotlib
@@ -899,7 +982,14 @@ def render_outputs(rgb_array, bndvi, bndvi_rgb, output_dir, capture_id,
     Image.fromarray(rgb_array).save(output_dir / names["raw"], quality=92)
     Image.fromarray(bndvi_rgb).save(output_dir / names["falsecolor"])
 
+    # The thumbnail is a JPEG and JPEG has no alpha, so masked pixels are flattened
+    # onto the page's own background rather than dropped -- they read as holes in
+    # the image, which is the same thing the transparent PNG shows on the page.
     thumb = Image.fromarray(bndvi_rgb)
+    if thumb.mode == "RGBA":
+        flat = Image.new("RGB", thumb.size, PAGE_BACKGROUND)
+        flat.paste(thumb, mask=thumb.split()[3])
+        thumb = flat
     thumb.thumbnail((400, 400))
     thumb.save(output_dir / names["thumb"], quality=85)
 
@@ -912,8 +1002,15 @@ def render_outputs(rgb_array, bndvi, bndvi_rgb, output_dir, capture_id,
     axes[0].set_title("Original (Infrablue)", color="#201e1d", fontsize=13, pad=8)
     axes[0].axis("off")
 
-    img = axes[1].imshow(bndvi, cmap=matplotlib_colormap(), vmin=-1, vmax=1,
-                         interpolation="nearest")
+    cmap = matplotlib_colormap()
+    if mask is not None:
+        # Masked pixels render as the page colour, so they read as "not measured"
+        # rather than as some value on the scale.
+        # with_extremes rather than copy()+set_bad: the latter is deprecated on
+        # newer matplotlib, and this runs on whatever the Pi's apt ships.
+        cmap = cmap.with_extremes(bad=tuple(c / 255 for c in PAGE_BACKGROUND))
+    img = axes[1].imshow(np.ma.masked_array(bndvi, mask=mask), cmap=cmap,
+                         vmin=-1, vmax=1, interpolation="nearest")
     axes[1].set_title("BNDVI Heatmap", color="#201e1d", fontsize=13, pad=8)
     axes[1].axis("off")
 
@@ -922,12 +1019,17 @@ def render_outputs(rgb_array, bndvi, bndvi_rgb, output_dir, capture_id,
     cbar.ax.yaxis.set_tick_params(color="#201e1d")
     plt.setp(cbar.ax.yaxis.get_ticklabels(), color="#201e1d")
 
-    s = bndvi_stats(bndvi, threshold_healthy, threshold_moderate)
+    s = bndvi_stats(bndvi, threshold_healthy, threshold_moderate, mask=mask)
+    mean_txt = "--" if s["mean"] is None else f"{s['mean']:+.3f}"
     overlay = (
-        f"Mean : {s['mean']:+.3f}\n"
+        f"Mean : {mean_txt}\n"
         f"Healthy  (>{threshold_healthy:g}) : {s['healthy_pct']:.1f}%\n"
         f"Stressed (<{threshold_moderate:g}) : {s['stressed_pct']:.1f}%"
     )
+    if s.get("masked_pct"):
+        # Say how much was thrown away. A mean over 5% of the frame must not be
+        # presented with the same confidence as one over all of it.
+        overlay += f"\nToo dark to read : {s['masked_pct']:.1f}%"
     axes[1].text(
         0.02, 0.02, overlay,
         transform=axes[1].transAxes,
@@ -956,6 +1058,8 @@ def capture_and_analyse(
     nir_leak_coef=DEFAULT_NIR_LEAK_COEF,
     threshold_healthy=DEFAULT_THRESHOLD_HEALTHY,
     threshold_moderate=DEFAULT_THRESHOLD_MODERATE,
+    mask_low_signal=True,
+    min_signal=DEFAULT_MIN_SIGNAL,
     save_array=False,
     capture_format="rgb888",
     neutralise_isp=True,
@@ -1011,18 +1115,25 @@ def capture_and_analyse(
         "threshold_moderate": float(threshold_moderate),
         "capture_format": capture_format,
         "neutralise_isp": bool(neutralise_isp) and not dev_mode,
+        "mask_low_signal": bool(mask_low_signal),
+        "min_signal": int(min_signal) if mask_low_signal else None,
     }
 
     bndvi = compute_bndvi(rgb, correct_nir_leakage=correct_nir_leakage,
                           nir_leak_coef=nir_leak_coef)
-    bndvi_rgb = bndvi_to_rgb(bndvi)
+    mask = None
+    if mask_low_signal:
+        mask = low_signal_mask(rgb, min_signal=min_signal,
+                               correct_nir_leakage=correct_nir_leakage,
+                               nir_leak_coef=nir_leak_coef)
+    bndvi_rgb = bndvi_to_rgb(bndvi, mask=mask)
     files = render_outputs(rgb, bndvi, bndvi_rgb, output_dir, capture_id,
                            save_array=save_array,
                            threshold_healthy=threshold_healthy,
-                           threshold_moderate=threshold_moderate)
+                           threshold_moderate=threshold_moderate, mask=mask)
     if dng_name:
         files["dng"] = dng_name
-    stats = bndvi_stats(bndvi, threshold_healthy, threshold_moderate)
+    stats = bndvi_stats(bndvi, threshold_healthy, threshold_moderate, mask=mask)
 
     return {
         "id": capture_id,
@@ -1031,8 +1142,12 @@ def capture_and_analyse(
         "notes": notes,
         "files": files,
         "stats": stats,
-        "classification": classify(stats["mean"], threshold_healthy,
-                                   threshold_moderate),
+        # None when every pixel was below the floor. The templates already render
+        # a null classification as "No reading", which is the honest answer --
+        # far better than classifying a frame nothing could be measured in.
+        "classification": (None if stats["mean"] is None else
+                           classify(stats["mean"], threshold_healthy,
+                                    threshold_moderate)),
         "settings": settings,
         # UAV fields -- null on a ground capture
         "flight_id": flight_id,
@@ -1066,6 +1181,12 @@ def _cli():
                    help="BNDVI above this counts as healthy")
     p.add_argument("--moderate", type=float, default=DEFAULT_THRESHOLD_MODERATE,
                    help="BNDVI below this counts as stressed")
+    p.add_argument("--no-mask", action="store_true",
+                   help="don't hide pixels too dark to read (see --min-signal)")
+    p.add_argument("--min-signal", type=int, default=DEFAULT_MIN_SIGNAL,
+                   help=f"mask pixels whose NIR+blue sum is below this "
+                        f"(default {DEFAULT_MIN_SIGNAL}); below it the index "
+                        f"measures sensor noise, not the plant")
     p.add_argument("--save-array", action="store_true",
                    help="also write the float32 BNDVI array as .npz")
     p.add_argument("--raw", action="store_true",
@@ -1094,6 +1215,8 @@ def _cli():
             nir_leak_coef=args.k,
             threshold_healthy=args.healthy,
             threshold_moderate=args.moderate,
+            mask_low_signal=not args.no_mask,
+            min_signal=args.min_signal,
             save_array=args.save_array,
             capture_format="raw_dng" if args.raw else "rgb888",
             **kwargs,
@@ -1104,8 +1227,15 @@ def _cli():
         sys.exit(1)
 
     print(json.dumps(record, indent=2))
-    print(f"\n  mean BNDVI {record['stats']['mean']:+.3f}"
-          f"  ->  {record['classification']}")
+    stats = record["stats"]
+    if stats["mean"] is None:
+        print("\n  no reading -- every pixel was too dark to measure")
+    else:
+        print(f"\n  mean BNDVI {stats['mean']:+.3f}"
+              f"  ->  {record['classification']}")
+        if stats.get("masked_pct"):
+            print(f"  ({stats['masked_pct']:.1f}% of the frame was too dark "
+                  f"to read and was excluded)")
     print(f"  {record['exposure_check']['text']}")
     print(f"\n[DONE] Outputs in: {output_dir.resolve()}")
 

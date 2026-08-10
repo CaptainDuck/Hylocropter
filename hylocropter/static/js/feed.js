@@ -21,6 +21,7 @@
     this.green = null;
     this.blue = null;
     this.bndvi = null;
+    this.mask = null;          // 1 where there is too little signal to read
     this.source = 'unknown';
     this.seq = -1;
     this.mismatch = null;
@@ -30,6 +31,12 @@
     this.k = options.k === undefined ? 0.8 : options.k;
     this.tHealthy = options.tHealthy === undefined ? 0.3 : options.tHealthy;
     this.tModerate = options.tModerate === undefined ? 0.1 : options.tModerate;
+    // Mirror of bndvi.DEFAULT_MIN_SIGNAL. Below this NIR+blue sum the index is
+    // reading sensor noise, and because NIR sits above blue at the noise floor
+    // it reads noise as *healthy* — so an unlit frame paints confidently green.
+    this.maskLowSignal = options.maskLowSignal === undefined
+      ? true : !!options.maskLowSignal;
+    this.minSignal = options.minSignal === undefined ? 20 : options.minSignal;
     this.onFrame = options.onFrame || function () {};
     this.onError = options.onError || function () {};
     this._poll = null;
@@ -96,8 +103,10 @@
     if (!this.nir) return null;
     const n = this.w * this.h;
     if (!this.bndvi || this.bndvi.length !== n) this.bndvi = new Float32Array(n);
-    const out = this.bndvi, nir = this.nir, blue = this.blue;
+    if (!this.mask || this.mask.length !== n) this.mask = new Uint8Array(n);
+    const out = this.bndvi, mask = this.mask, nir = this.nir, blue = this.blue;
     const correct = this.correctNir, k = this.k;
+    const doMask = this.maskLowSignal, floor = this.minSignal;
     for (let i = 0; i < n; i++) {
       const r = nir[i];
       // clamp to a small positive value so dense-vegetation pixels (where k*R
@@ -106,6 +115,9 @@
       const den = r + vis;
       const v = den === 0 ? 0 : (r - vis) / den;
       out[i] = v < -1 ? -1 : (v > 1 ? 1 : v);
+      // Test the denominator, not the brightness — it is what the noise is
+      // divided into. Same rule as bndvi.low_signal_mask().
+      mask[i] = (doMask && den < floor) ? 1 : 0;
     }
     return out;
   };
@@ -113,10 +125,15 @@
   Feed.prototype.stats = function () {
     const v = this.bndvi;
     if (!v) return null;
-    const n = v.length;
-    let sum = 0, mn = 1, mx = -1, h = 0, m = 0, s = 0;
+    const n = v.length, mask = this.mask;
+    // Masked pixels are excluded rather than counted, exactly as bndvi_stats()
+    // does server-side. Averaging them in would drag the mean toward whatever
+    // the noise floor says, which is the thing the mask exists to prevent.
+    let sum = 0, mn = 1, mx = -1, h = 0, m = 0, s = 0, valid = 0, masked = 0;
     for (let i = 0; i < n; i++) {
+      if (mask && mask[i]) { masked++; continue; }
       const x = v[i];
+      valid++;
       sum += x;
       if (x < mn) mn = x;
       if (x > mx) mx = x;
@@ -124,12 +141,22 @@
       else if (x >= this.tModerate) m++;
       else s++;
     }
-    const mean = sum / n;
+    const maskedPct = (masked / n) * 100;
+    // Nothing measurable. Report the emptiness instead of a NaN mean.
+    if (!valid) {
+      return { mean: null, min: null, max: null, std: null,
+               h: 0, m: 0, s: 0, maskedPct: maskedPct };
+    }
+    const mean = sum / valid;
     let sq = 0;
-    for (let i = 0; i < n; i++) sq += (v[i] - mean) * (v[i] - mean);
+    for (let i = 0; i < n; i++) {
+      if (mask && mask[i]) continue;
+      sq += (v[i] - mean) * (v[i] - mean);
+    }
     return {
-      mean: mean, min: mn, max: mx, std: Math.sqrt(sq / n),
-      h: (h / n) * 100, m: (m / n) * 100, s: (s / n) * 100
+      mean: mean, min: mn, max: mx, std: Math.sqrt(sq / valid),
+      h: (h / valid) * 100, m: (m / valid) * 100, s: (s / valid) * 100,
+      maskedPct: maskedPct
     };
   };
 
@@ -160,6 +187,10 @@
     canvas._ctx.putImageData(canvas._img, 0, 0);
     const ctx = canvas.getContext('2d');
     ctx.imageSmoothingEnabled = true;
+    // drawImage composites source-over, so without clearing first any pixel the
+    // mask made transparent would show the *previous* frame through the hole
+    // instead of the page behind it.
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(canvas._off, 0, 0, canvas.width, canvas.height);
   };
 
@@ -180,26 +211,28 @@
 
   Feed.prototype.paintHeat = function (canvas) {
     if (!this._lut) this._lut = Colormap.buildLut(512);
-    const lut = this._lut, v = this.bndvi;
+    const lut = this._lut, v = this.bndvi, mask = this.mask;
     this._blit(canvas, function (d) {
       for (let i = 0; i < v.length; i++) {
         const idx = (((v[i] + 1) * 0.5 * 511) | 0) * 3;
         d[i * 4] = lut[idx];
         d[i * 4 + 1] = lut[idx + 1];
         d[i * 4 + 2] = lut[idx + 2];
-        d[i * 4 + 3] = 255;
+        // Transparent, not a colour: an unmeasurable pixel has to read as
+        // absent, the way an unvisited grid cell stays null on the map.
+        d[i * 4 + 3] = (mask && mask[i]) ? 0 : 255;
       }
     });
   };
 
   Feed.prototype.paintFalse = function (canvas) {
     const v = this.bndvi, th = this.tHealthy, tm = this.tModerate;
-    const B = Colormap.BANDS;
+    const B = Colormap.BANDS, mask = this.mask;
     this._blit(canvas, function (d) {
       for (let i = 0; i < v.length; i++) {
         const c = v[i] > th ? B.healthy : (v[i] >= tm ? B.moderate : B.stressed);
         d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2];
-        d[i * 4 + 3] = 255;
+        d[i * 4 + 3] = (mask && mask[i]) ? 0 : 255;
       }
     });
   };

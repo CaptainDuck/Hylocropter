@@ -24,6 +24,8 @@
       k: cfg.nir_leak_coef,
       tHealthy: cfg.threshold_healthy,
       tModerate: cfg.threshold_moderate,
+      maskLowSignal: cfg.mask_low_signal,
+      minSignal: cfg.min_signal,
       onFrame: render,
       onError: function (err) {
         HC.toast('Live feed stopped: ' + err.message, true);
@@ -63,12 +65,15 @@
   function paintStats() {
     const s = feed.stats();
     if (!s) return;
-    setText('live-mean', HC.fmt(s.mean));
+    // A null mean means every pixel was masked. Show a dash rather than "NaN":
+    // there is genuinely no reading, and the sanity note below explains why.
+    const none = s.mean === null;
+    setText('live-mean', none ? '—' : HC.fmt(s.mean));
     setText('live-healthy', s.h.toFixed(1) + '%');
     setText('live-moderate', s.m.toFixed(1) + '%');
     setText('live-stressed', s.s.toFixed(1) + '%');
-    setText('live-std', s.std.toFixed(3));
-    setText('live-range', HC.fmt(s.min) + ' … ' + HC.fmt(s.max));
+    setText('live-std', none ? '—' : s.std.toFixed(3));
+    setText('live-range', none ? '—' : HC.fmt(s.min) + ' … ' + HC.fmt(s.max));
     setText('sanity-note', sanityNote(s, feed.channelMeans()));
   }
 
@@ -85,6 +90,17 @@
         'is a simulated reference card, so you can try the calibration below.';
     }
     if (!ch) return 'Waiting for the first frame…';
+    if (s && s.mean === null) {
+      return 'Every pixel is below the signal floor, so there is nothing to ' +
+        'measure — the canvases are transparent rather than green. Shoot in ' +
+        'daylight or raise the exposure. (Turn the mask off to see what the ' +
+        'index would have claimed: it reads healthy, from noise.)';
+    }
+    if (s && s.maskedPct > 5) {
+      return 'Hiding ' + s.maskedPct.toFixed(0) + '% of the frame as too dark ' +
+        'to read — the figures above cover only the rest. Deep shadow does ' +
+        'this legitimately; if it is most of the frame, raise the exposure.';
+    }
     if (ch.nir > 245 || ch.blue > 245) {
       return 'Channels are clipping at 255. A clipped channel makes BNDVI read ' +
         'falsely flat — lower the exposure or the gain.';
@@ -149,6 +165,28 @@
     HC.slider(HC.$('#k'), HC.$('#k-label'),
       function (v) { return v.toFixed(2); },
       function (v) { feed.k = v; repaint(); HC.saveSetting({ nir_leak_coef: v }); });
+
+    // Masking is derived in the browser from the planes already on screen, so
+    // like k and the thresholds it repaints with no server round-trip.
+    HC.$$('[data-mask]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        feed.maskLowSignal = btn.dataset.mask === 'on';
+        HC.$$('[data-mask]').forEach(function (b) {
+          b.classList.toggle('is-on',
+            (b.dataset.mask === 'on') === feed.maskLowSignal);
+        });
+        setText('mask-label', feed.maskLowSignal ? 'On' : 'Off');
+        HC.saveSetting({ mask_low_signal: feed.maskLowSignal });
+        repaint();
+      });
+    });
+
+    HC.slider(HC.$('#min-signal'), HC.$('#min-signal-label'),
+      function (v) { return String(Math.round(v)); },
+      function (v) {
+        feed.minSignal = Math.round(v); repaint();
+        HC.saveSetting({ min_signal: Math.round(v) });
+      });
 
     HC.slider(HC.$('#t-healthy'), HC.$('#t-healthy-label'),
       function (v) { return v.toFixed(2); },

@@ -550,6 +550,63 @@ flying.
 
 ---
 
+## 11. 🟡 The low-signal floor (`min_signal = 20`) is a judgement call
+
+**Status: implemented and on by default, but the number is not sourced.**
+
+BNDVI divides by `NIR + blue`. As that denominator approaches the sensor's noise floor
+the ratio stops describing reflectance and starts describing the gap between two black
+levels. Because the NIR (red) Bayer channel sits *above* blue down there — more dark
+current, and the gel passes NIR broadly while blocking nearly all visible blue — the
+error is **systematically positive**. So an unlit frame does not read as obviously
+broken. It reads as a confident **+0.8, "healthy"**.
+
+Measured on the bench, 10 Aug 2026, camera pointed at a dark ceiling indoors at night:
+
+```
+NIR 1.8   GREEN 1.4   BLUE 0.2      →   BNDVI +0.80   →  "healthy"
+```
+
+That is the dangerous direction of error: it is exactly the reading a farmer would act
+on. `compute_bndvi()` previously guarded only literal 0/0, so a pixel of NIR=2, blue=0
+returned **+1.0** — maximum confidence from two counts of noise.
+
+**What the literature actually does.** Masking these pixels is normal practice, but not
+by a raw brightness floor. Operational precision agriculture (a) calibrates to reflectance
+with a panel, (b) masks shadow and cloud with dedicated detectors (Fmask, NSVDI,
+AgroShadow), and (c) thresholds on the *index value* to exclude non-vegetation — note
+that (c) would not catch this case, since noise reads +0.8 and sails through. It is also
+documented that shadowed pixels read *higher* NDVI than sunlit canopy, and Public Lab
+notes the blue-filter variant is especially prone to it because blue reflectance is so
+much lower than NIR. The literature warns explicitly that fixed thresholds are
+dataset-dependent and make processing "less objective".
+
+**So this is a defensible safety net, not a standard.** It matters more for dragon fruit
+than for a row crop: the canopy is structurally shadow-heavy — tall posts, dense pads,
+deep self-shading — so shadowed pixels are a large fraction of every frame rather than an
+edge case.
+
+**What to do:** the honest fix is exposure discipline, not the floor. Fly in daylight and
+confirm exposure first; `exposure_warning()` already reports this. Treat the floor as a
+backstop and say so in the writeup. If you want to defend the number, the experiment is
+small: shoot a target at descending exposures, plot BNDVI variance against `NIR + blue`,
+and pick the knee. That would turn a judgement call into a measurement.
+
+**Known limitation, and it is the interesting one.** Masking alone does not prevent a
+misleading verdict. On the same dark frame the mask correctly excluded 99.8% of pixels —
+but the surviving 0.2% (the brightest specks of noise) then produced a confident
+**+0.578, "healthy"**. The `masked_pct` figure is reported everywhere so the thinness of
+the sample is visible, but the headline classification still reads healthy. A coverage
+guard — refuse to classify at all when too little of the frame survived — would close
+that, at the cost of a second judgement threshold. Not implemented; worth a sentence in
+the defense either way.
+
+**Turning it off:** Debug view, "Hide pixels too dark to read", or `--no-mask` on the CLI.
+Every capture records `mask_low_signal` and `min_signal` in its `settings`, so changing
+it later never rewrites what an old capture meant.
+
+---
+
 ## Suggested order of attack
 
 | # | Task | Where | Effort |

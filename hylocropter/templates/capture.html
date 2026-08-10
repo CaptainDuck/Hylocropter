@@ -94,6 +94,10 @@
         <div style="font-size:12.5px;color:color-mix(in srgb, var(--color-text) 58%, transparent)">
           Healthy above {{ '%.2f'|format(r.settings.threshold_healthy|default(0.3)) }} ·
           stressed below {{ '%.2f'|format(r.settings.threshold_moderate|default(0.1)) }}
+          {%- if r.stats.masked_pct %} ·
+          <strong>{{ '%.0f'|format(r.stats.masked_pct) }}% too dark to read</strong>,
+          excluded from these figures
+          {%- endif -%}
         </div>
       </div>
 
@@ -106,6 +110,12 @@
           {{ kv('AWB / AE', 'locked' if r.settings.awb_locked else ('synthetic' if r.settings.dev_mode else '—')) }}
           {{ kv('NIR correction', ('on (k = %.2f)'|format(r.settings.nir_leak_coef))
                 if r.settings.correct_nir_leakage else 'off') }}
+          {# Records written before the signal floor existed simply lack the key,
+             and show a dash rather than claiming a setting they never had. #}
+          {{ kv('Dark-pixel mask',
+                ('on (floor %d)'|format(r.settings.min_signal)
+                 if r.settings.mask_low_signal else 'off')
+                if r.settings.mask_low_signal is not none else '—') }}
           {{ kv('Format', r.settings.capture_format|default('rgb888')) }}
           {{ kv('ISP neutralised', 'yes' if r.settings.neutralise_isp else
                 ('n/a (synthetic)' if r.settings.dev_mode else 'no')) }}

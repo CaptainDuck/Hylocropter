@@ -34,6 +34,24 @@
   const pins = JSON.parse(host.dataset.pins || '[]');
   let blocks = JSON.parse(host.dataset.blocks || '[]');
 
+  // Switching location changes the vicinity, the coverage outline and which
+  // tiles exist, all of which are rendered server-side — so reload rather than
+  // try to rebuild the map in place and miss one of them.
+  const siteSel = document.getElementById('map-site');
+  if (siteSel) {
+    siteSel.addEventListener('change', function () {
+      siteSel.disabled = true;
+      HC.api('/api/settings', {
+        method: 'PATCH', body: { active_site: siteSel.value }
+      }).then(function () {
+        location.reload();
+      }).catch(function (err) {
+        siteSel.disabled = false;
+        HC.toast('Could not switch location: ' + err.message, true);
+      });
+    });
+  }
+
   let mode = 'photos';
   let overlay = null;
   let opacity = 0.82;
@@ -169,7 +187,7 @@
   const BLOCK_COLOUR = '#f0a03c';
   const layers = {};            // block id -> Leaflet rectangle
   let drawing = false;
-  let firstCorner = null;       // {lat, lng} once the first corner is clicked
+  let draft = [];               // corners clicked so far, in order
   let pending = null;           // the rectangle being drawn
   let rubber = null;            // live rectangle following the cursor
 
@@ -183,6 +201,7 @@
     where: document.getElementById('block-where'),
     name: document.getElementById('block-name'),
     save: document.getElementById('block-save'),
+    undo: document.getElementById('block-undo'),
     cancel: document.getElementById('block-cancel')
   };
 
@@ -210,10 +229,15 @@
       delete layers[id];
     });
     blocks.forEach(function (b) {
-      const rect = L.rectangle(boundsOf(b), {
+      // Draw the outline that was traced. Falling back to the bounding box keeps
+      // blocks saved before polygons existed on the map.
+      const style = {
         color: BLOCK_COLOUR, weight: 2.5, fillColor: BLOCK_COLOUR,
         fillOpacity: 0.10, interactive: false
-      }).addTo(map);
+      };
+      const rect = (b.points && b.points.length >= 3)
+        ? L.polygon(b.points, style).addTo(map)
+        : L.rectangle(boundsOf(b), style).addTo(map);
       // Name only. The dimensions are in the panel list, and repeating them here
       // makes labels wide enough to collide once there are a few blocks.
       rect.bindTooltip(b.name, {
@@ -249,8 +273,9 @@
 
   function setDrawing(on) {
     drawing = on;
-    firstCorner = null;
+    draft = [];
     pending = null;
+    if (els.undo) els.undo.hidden = true;
     if (rubber) { rubber.remove(); rubber = null; }
     if (els.edit) els.edit.hidden = !on;
     if (els.start) els.start.hidden = on;
@@ -268,10 +293,7 @@
       }
       if (els.name) els.name.value = suggestName();
       if (els.where) els.where.textContent = 'no corners yet';
-      if (els.hint) {
-        els.hint.textContent =
-          'Click one corner of the plot, then the opposite corner.';
-      }
+      if (els.hint) els.hint.textContent = draftHint(false);
     }
     if (els.save) els.save.disabled = true;
   }
@@ -291,43 +313,112 @@
     };
   }
 
-  function showRubber(box, dashed) {
-    if (rubber) rubber.remove();
-    rubber = L.rectangle(boundsOf(box), {
-      color: BLOCK_COLOUR, weight: 2, dashArray: dashed ? '5 5' : null,
-      fillColor: BLOCK_COLOUR, fillOpacity: 0.08, interactive: false
-    }).addTo(map);
+  /* Two clicks still mean "opposite corners of a rectangle", because that is the
+     quick common case and it is what everyone's hands already know. From the
+     third click on it becomes a polygon of exactly the points clicked — real
+     plots follow roads and terrain, and forcing them into a north-aligned box
+     plans a mission over the neighbour's ground. */
+  function draftPoints() {
+    if (draft.length === 2) {
+      const r = rectFrom(draft[0], draft[1]);
+      return [[r.south, r.west], [r.south, r.east],
+              [r.north, r.east], [r.north, r.west]];
+    }
+    return draft.map(function (p) { return [p.lat, p.lng]; });
+  }
+
+  /** Shoelace area in m², mirroring flights.polygon_area_m2. */
+  function draftArea(pts) {
+    if (pts.length < 3) return 0;
+    const k = mPerDegLon(pts[0][0]);
+    let t = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      t += ((a[1] - pts[0][1]) * k) * ((b[0] - pts[0][0]) * M_PER_DEG_LAT)
+         - ((b[1] - pts[0][1]) * k) * ((a[0] - pts[0][0]) * M_PER_DEG_LAT);
+    }
+    return Math.abs(t) / 2;
+  }
+
+  function describeDraft(pts) {
+    const lats = pts.map(function (p) { return p[0]; });
+    const lngs = pts.map(function (p) { return p[1]; });
+    const ha = draftArea(pts) / 10000;
+    const box = describeBlock({
+      south: Math.min.apply(null, lats), north: Math.max.apply(null, lats),
+      west: Math.min.apply(null, lngs), east: Math.max.apply(null, lngs)
+    });
+    if (pts.length === 4 && draft.length === 2) return box;
+    return pts.length + ' corners · ' + ha.toFixed(2) + ' ha';
+  }
+
+  function showRubber(pts, cursor) {
+    if (rubber) { rubber.remove(); rubber = null; }
+    const ring = pts.slice();
+    if (cursor) ring.push([cursor.lat, cursor.lng]);
+    if (ring.length < 2) {
+      rubber = L.circleMarker(ring[0], {
+        radius: 4, color: BLOCK_COLOUR, fillColor: BLOCK_COLOUR,
+        fillOpacity: 1, interactive: false
+      }).addTo(map);
+      return;
+    }
+    const shape = ring.length >= 3
+      ? L.polygon(ring, {
+          color: BLOCK_COLOUR, weight: 2, dashArray: cursor ? '5 5' : null,
+          fillColor: BLOCK_COLOUR, fillOpacity: 0.08, interactive: false })
+      : L.polyline(ring, {
+          color: BLOCK_COLOUR, weight: 2, dashArray: '5 5', interactive: false });
+    rubber = L.layerGroup([shape]).addTo(map);
+    // A dot per placed corner, so it is obvious what has been committed and what
+    // is just following the mouse.
+    pts.forEach(function (p) {
+      L.circleMarker(p, {
+        radius: 3.5, color: BLOCK_COLOUR, fillColor: '#fff', fillOpacity: 1,
+        weight: 2, interactive: false
+      }).addTo(rubber);
+    });
+  }
+
+  function refreshDraft(cursor) {
+    const pts = draftPoints();
+    if (!pts.length) {
+      if (rubber) { rubber.remove(); rubber = null; }
+      if (els.where) els.where.textContent = 'no corners yet';
+      if (els.save) els.save.disabled = true;
+      pending = null;
+      return;
+    }
+    showRubber(pts, draft.length >= 1 ? cursor : null);
+    const usable = pts.length >= 3 && draftArea(pts) >= 25;
+    pending = usable ? { points: pts } : null;
+    if (els.save) els.save.disabled = !usable;
+    if (els.where) {
+      els.where.textContent = draft.length === 1
+        ? 'one corner set' : describeDraft(pts);
+    }
+    if (els.undo) els.undo.hidden = draft.length === 0;
+    if (els.hint) els.hint.textContent = draftHint(usable);
+  }
+
+  function draftHint(usable) {
+    if (draft.length === 0) {
+      return 'Click each corner of the plot. Two clicks makes a rectangle; ' +
+        'keep clicking for any other shape.';
+    }
+    if (draft.length === 1) return 'Click the opposite corner for a rectangle.';
+    if (draft.length === 2) {
+      return 'That is a rectangle. Click more corners to trace the real outline ' +
+        'instead, or name it and save.';
+    }
+    return usable
+      ? 'Keep clicking corners, or name it and save.'
+      : 'Those corners are almost in a line — click a corner off to one side.';
   }
 
   function onDrawClick(latlng) {
-    if (!firstCorner) {
-      firstCorner = latlng;
-      if (els.hint) els.hint.textContent = 'Now click the opposite corner.';
-      if (els.where) els.where.textContent = 'first corner set';
-      return;
-    }
-    pending = rectFrom(firstCorner, latlng);
-    firstCorner = null;
-    const d = dimsOf(pending);
-    if (d.w < 5 || d.h < 5) {
-      // Two clicks in nearly the same spot is a slip, not a plot. Say so rather
-      // than saving something the server would reject anyway.
-      pending = null;
-      if (rubber) { rubber.remove(); rubber = null; }
-      if (els.hint) {
-        els.hint.textContent = 'That box is too small to fly. Click one corner, ' +
-          'then the opposite corner.';
-      }
-      if (els.where) els.where.textContent = 'no corners yet';
-      if (els.save) els.save.disabled = true;
-      return;
-    }
-    showRubber(pending, false);
-    if (els.where) els.where.textContent = describeBlock(pending);
-    if (els.hint) {
-      els.hint.textContent = 'Click again to redraw it, or name it and save.';
-    }
-    if (els.save) els.save.disabled = false;
+    draft.push(latlng);
+    refreshDraft(null);
   }
 
   /* ── persistence ─────────────────────────────────────────────────────────── */
@@ -357,6 +448,16 @@
     els.start.addEventListener('click', function () { setDrawing(true); });
   }
 
+  if (els.undo) {
+    els.undo.addEventListener('click', function () {
+      // One misplaced corner shouldn't cost the whole outline — tracing a
+      // ten-sided plot and starting over because of the last click is the sort
+      // of thing that makes people give up and draw a box instead.
+      draft.pop();
+      refreshDraft(null);
+    });
+  }
+
   if (els.cancel) {
     els.cancel.addEventListener('click', function () {
       setDrawing(false);
@@ -372,11 +473,12 @@
       const next = blocks.concat([{
         id: 'b' + Date.now().toString(36),
         name: name,
-        south: pending.south, west: pending.west,
-        north: pending.north, east: pending.east
+        // Points only. The server derives the bounding box from them, so there
+        // is one place that decides what a block's extent is.
+        points: pending.points
       }]);
       const ok = await persist(next,
-        name + ' saved — ' + describeBlock(pending) +
+        name + ' saved — ' + describeDraft(pending.points) +
         '. The mission planner on the New flight page can plan for it now.');
       if (!ok) { els.save.disabled = false; return; }
       setDrawing(false);
@@ -710,13 +812,9 @@
 
   map.on('mousemove', function (e) {
     if (drawing) {
-      // Rubber-band the box out from the first corner so the size is visible
-      // before committing to the second click.
-      if (firstCorner) {
-        const box = rectFrom(firstCorner, e.latlng);
-        showRubber(box, true);
-        if (els.where) els.where.textContent = describeBlock(box);
-      }
+      // Rubber-band the shape out to the cursor so the size and outline are
+      // visible before committing the next corner.
+      if (draft.length) refreshDraft(e.latlng);
       return;                            // the picker owns the hint while it's up
     }
     note(describe(e.latlng));

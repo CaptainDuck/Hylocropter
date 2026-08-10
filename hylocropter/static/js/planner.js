@@ -36,12 +36,20 @@
       setText('mp-spacing', p.line_spacing_m + ' m');
       setText('mp-footprint', p.footprint_w_m + ' × ' + p.footprint_h_m + ' m');
       setText('mp-gsd', p.gsd_cm ? p.gsd_cm + ' cm per pixel' : '—');
+      // With a traced block the area is the outline's own, so it deliberately
+      // does not multiply out from the two dimensions — those are the plot's
+      // long and short axes, and an L-shaped plot is smaller than their product.
+      const traced = !!(p.legs && p.legs.length);
       setText('mp-photos', p.photos + ' over ' + p.plot_area_ha + ' ha (' +
-        p.plot_w_m + ' × ' + p.plot_h_m + ' m)');
-      setText('mp-lines', p.lines + ' lines, ' + p.photos_per_line + ' photos each');
-      // Which way round matters on a rectangle: the long axis means fewer turns.
+        p.plot_w_m + ' × ' + p.plot_h_m + ' m' +
+        (traced ? ', traced outline' : '') + ')');
+      setText('mp-lines', p.lines + (traced ? ' legs, ' : ' lines, ') +
+        p.photos_per_line + ' photos each' +
+        (traced && p.lines > 1 ? ' on average' : ''));
+      // Which way round matters: the long axis means fewer turns. On a traced
+      // block that axis is the plot's own, which is rarely north–south.
       setText('mp-direction', p.line_direction +
-        ', along the longer side');
+        (traced ? ' — the block’s own long axis' : ', along the longer side'));
       setText('mp-direction-2', p.line_direction);
       setText('mp-time', p.minutes + ' min at ' + p.speed_ms + ' m/s');
       setText('mp-storage', p.storage_mb >= 1024

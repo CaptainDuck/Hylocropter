@@ -19,6 +19,7 @@ import math
 import pytest
 
 import flights
+import tiles
 
 
 def capture(lat=None, lon=None, mean=0.4, rel_alt=12.0, heading=0.0,
@@ -554,3 +555,282 @@ def test_summary_always_offers_something_to_do():
     for mean in (0.6, 0.3, 0.0, -0.5):
         s = flights.summarise(mean, 20)
         assert s["advice"] and s["plain"] and s["headline"]
+
+
+# ── captures that measured nothing ───────────────────────────────────────────
+#
+# A capture whose every pixel fell below the signal floor stores a mean of None.
+# Counting that as a reading of zero would drag a flight toward "stressed" on the
+# strength of a photo that measured nothing, and painting its cell would invent
+# ground truth -- the same reason unvisited cells stay null.
+
+def _capture(cid, lat, lon, mean):
+    return {"id": cid, "geo": {"lat": lat, "lon": lon},
+            "stats": None if mean is None else {
+                "mean": mean, "min": mean, "max": mean, "std": 0.0,
+                "healthy_pct": 100.0, "moderate_pct": 0.0, "stressed_pct": 0.0}}
+
+
+def test_has_reading_separates_measured_from_unmeasured():
+    assert flights.has_reading(_capture("a", 0, 0, 0.5))
+    assert not flights.has_reading(_capture("b", 0, 0, None))
+    assert not flights.has_reading({"id": "c"})
+    # A capture predating the floor always carries a number, so it still counts.
+    assert flights.has_reading({"stats": {"mean": 0.0}})
+
+
+def test_an_unreadable_capture_is_not_averaged_in_as_zero():
+    good = [_capture("a", 0, 0, 0.6), _capture("b", 0, 0, 0.6)]
+    with_dark = good + [_capture("c", 0, 0, None)]
+    assert (flights.aggregate_stats(with_dark)["mean"]
+            == pytest.approx(flights.aggregate_stats(good)["mean"]))
+    assert flights.aggregate_stats(with_dark)["mean"] == pytest.approx(0.6)
+
+
+def test_a_cell_holding_only_unreadable_captures_stays_null():
+    bounds = {"south": 0.0, "west": 0.0, "north": 1.0, "east": 1.0}
+    grid = flights.build_grid([_capture("a", 0.5, 0.5, None)], bounds, 0.3, 0.1)
+    assert all(c is None for c in grid["cells"]), \
+        "an unmeasured capture must not paint a cell"
+    assert grid["covered"] == 0
+
+
+# ── several downloaded areas in one tile tree ────────────────────────────────
+#
+# Tiles are a global {z}/{x}/{y} tree, so downloading a second vicinity adds to
+# the map instead of replacing it. The manifest therefore has to remember every
+# area, or the coverage outline gets drawn around whichever one was fetched last
+# -- which, with the farm and the campus 60 km apart, means drawing the edge of
+# the imagery over ground that has none.
+
+FARM_AREA = {"centre": [14.1265, 121.0768], "box_m": 620, "area_ha": 38.4,
+             "tile_bounds": {"south": 14.12, "west": 121.07,
+                             "north": 14.13, "east": 121.08}}
+SCHOOL_AREA = {"centre": [13.94291, 121.14773], "box_m": 1500, "area_ha": 225.0,
+               "tile_bounds": {"south": 13.93, "west": 121.14,
+                               "north": 13.95, "east": 121.16}}
+
+
+def test_a_second_download_does_not_forget_the_first():
+    areas = tiles.imagery_areas({"areas": [FARM_AREA]}, SCHOOL_AREA)
+    assert [a["box_m"] for a in areas] == [620, 1500]
+
+
+def test_a_manifest_written_before_multiple_areas_is_carried_forward():
+    """The farm's imagery was downloaded before this feature existed. Its record
+    lives in the manifest's top-level keys and must survive the next download."""
+    areas = tiles.imagery_areas(dict(FARM_AREA), SCHOOL_AREA)
+    assert [a["box_m"] for a in areas] == [620, 1500]
+
+
+def test_downloading_the_same_place_twice_replaces_rather_than_repeats():
+    areas = tiles.imagery_areas({"areas": [FARM_AREA, SCHOOL_AREA]}, SCHOOL_AREA)
+    assert len(areas) == 2
+
+
+def test_coverage_describes_the_area_you_are_looking_at():
+    areas = [FARM_AREA, SCHOOL_AREA]
+    assert tiles.area_for(areas, (14.1265, 121.0768))["box_m"] == 620
+    assert tiles.area_for(areas, (13.94291, 121.14773))["box_m"] == 1500
+
+
+def test_a_centre_outside_every_area_falls_back_to_the_nearest():
+    """Somewhere with no imagery at all must still resolve, not raise -- the map
+    has to render before anything has been downloaded for that spot."""
+    assert tiles.area_for([FARM_AREA, SCHOOL_AREA], (0.0, 0.0)) is not None
+    assert tiles.area_for([], (14.0, 121.0)) is None
+
+
+# ── zoom levels the imagery source doesn't actually have ─────────────────────
+#
+# Esri does not answer 404 where it has no imagery -- it serves one placeholder
+# image reading "Map data not yet available". Downloaded blindly that tiles a
+# picture of the words "no imagery" across the map, which reads as a broken
+# dashboard. It has real zoom 19 over the Tanauan farm but stops at 18 over
+# De La Salle Lipa, so this is not hypothetical.
+
+def _write_tiles(root, z, x_range, y_range, content):
+    for i, x in enumerate(x_range):
+        for j, y in enumerate(y_range):
+            p = root / str(z) / str(x)
+            p.mkdir(parents=True, exist_ok=True)
+            body = content if isinstance(content, bytes) else content(i, j)
+            (p / f"{y}.jpg").write_bytes(body)
+
+
+def test_a_zoom_of_identical_tiles_is_recognised_as_placeholder(tmp_path):
+    _write_tiles(tmp_path, 19, range(0, 4), range(0, 4), b"same-placeholder")
+    assert tiles.placeholder_zooms(tmp_path, {19: (0, 3, 0, 3)}) == [19]
+
+
+def test_real_imagery_is_not_mistaken_for_a_placeholder(tmp_path):
+    _write_tiles(tmp_path, 18, range(0, 4), range(0, 4),
+                 lambda i, j: f"tile-{i}-{j}".encode())
+    assert tiles.placeholder_zooms(tmp_path, {18: (0, 3, 0, 3)}) == []
+
+
+def test_a_handful_of_tiles_is_not_enough_to_condemn_a_zoom(tmp_path):
+    """A 2x2 patch of sea or bare field is legitimately uniform. Judging that as
+    placeholder would throw away real imagery, so require a decent sample."""
+    _write_tiles(tmp_path, 19, range(0, 2), range(0, 2), b"uniform")
+    assert tiles.placeholder_zooms(tmp_path, {19: (0, 1, 0, 1)}) == []
+
+
+def test_coverage_reports_the_zooms_that_location_actually_has():
+    """map.js takes maxNativeZoom from this. If the campus claimed zoom 19 the
+    map would request placeholder tiles instead of upscaling real zoom-18."""
+    farm = dict(FARM_AREA, zooms=[16, 17, 18, 19])
+    school = dict(SCHOOL_AREA, zooms=[16, 17, 18])
+    assert tiles.area_for([farm, school], (14.1265, 121.0768))["zooms"][-1] == 19
+    assert tiles.area_for([farm, school], (13.94291, 121.14773))["zooms"][-1] == 18
+
+
+# ── polygon blocks ───────────────────────────────────────────────────────────
+#
+# A block used to be an axis-aligned rectangle, which cannot describe a plot that
+# runs diagonally or has more than four corners. Planning on the bounding box of
+# a 45-degree plot means flying 2.4x the ground, most of it the neighbour's.
+
+FARM_LAT, FARM_LON = 14.1265, 121.0768
+
+
+def _poly(xy_m, rotate_deg=0.0, origin=(FARM_LAT, FARM_LON)):
+    """A polygon from metres, optionally rotated, as lat/lon."""
+    th = math.radians(rotate_deg)
+    c, s = math.cos(th), math.sin(th)
+    return flights.to_latlon(
+        [(x * c - y * s, x * s + y * c) for x, y in xy_m], origin)
+
+
+RECT_100x40 = [(0, 0), (100, 0), (100, 40), (0, 40)]
+
+
+def test_polygon_area_is_the_real_area_not_the_bounding_box():
+    rotated = _poly(RECT_100x40, 45)
+    assert flights.polygon_area_m2(rotated) == pytest.approx(4000, rel=0.01)
+    lats = [p[0] for p in rotated]
+    lons = [p[1] for p in rotated]
+    box = ((max(lons) - min(lons)) * flights.m_per_deg_lon(FARM_LAT)
+           * (max(lats) - min(lats)) * flights.M_PER_DEG_LAT)
+    assert box > 9000, "the bounding box really is more than twice the plot"
+
+
+@pytest.mark.parametrize("deg", [0, 17, 30, 45, 90, 137])
+def test_the_plot_is_measured_the_same_whichever_way_it_lies(deg):
+    """Rotating a field does not change it. If any of these drift, the planner is
+    measuring the map's axes rather than the plot's."""
+    _, long_m, short_m = flights.min_area_rect(
+        flights.to_local_m(_poly(RECT_100x40, deg)))
+    assert long_m == pytest.approx(100, rel=0.02)
+    assert short_m == pytest.approx(40, rel=0.02)
+
+
+@pytest.mark.parametrize("deg", [0, 30, 45, 90])
+def test_flight_lines_are_the_same_count_and_length_at_any_angle(deg):
+    lines = flights.survey_lines(_poly(RECT_100x40, deg), 10.0)
+    assert len(lines) == 4
+    for (a, b) in lines:
+        dx = (b[1] - a[1]) * flights.m_per_deg_lon(a[0])
+        dy = (b[0] - a[0]) * flights.M_PER_DEG_LAT
+        assert math.hypot(dx, dy) == pytest.approx(100, rel=0.02)
+
+
+def test_an_exact_fit_does_not_gain_a_line_to_rounding():
+    """40 m across at 10 m spacing is four lines. Rotating into the line frame
+    leaves it measuring 40.0000000001, and a bare ceil() would charge five."""
+    assert len(flights.survey_lines(_poly(RECT_100x40, 30), 10.0)) == 4
+
+
+def test_lines_stop_at_the_edges_of_a_concave_plot():
+    """A C-shaped block: lines crossing the notch must come back as two separate
+    legs. Flying the gap would waste battery over ground that isn't the plot."""
+    c_shape = _poly([(0, 0), (100, 0), (100, 40), (70, 40),
+                     (70, 15), (30, 15), (30, 40), (0, 40)])
+    legs = flights.survey_lines(c_shape, 5.0)
+    assert len(legs) > 8, "some sweeps must have split in two"
+    assert flights.polygon_area_m2(c_shape) == pytest.approx(3000, rel=0.02)
+
+
+def test_planning_a_diagonal_plot_beats_planning_its_bounding_box():
+    """The whole point. A 200x60 m plot at 45 degrees fits one battery when
+    planned on its outline, and looks like a 20-minute flight on its box."""
+    poly = _poly([(0, 0), (200, 0), (200, 60), (0, 60)], 45)
+    lats = [p[0] for p in poly]
+    lons = [p[1] for p in poly]
+    box = flights.mission_plan(
+        12,
+        plot_w_m=(max(lons) - min(lons)) * flights.m_per_deg_lon(FARM_LAT),
+        plot_h_m=(max(lats) - min(lats)) * flights.M_PER_DEG_LAT)
+    real = flights.mission_plan(12, polygon=poly)
+    assert real["minutes"] < box["minutes"] / 2
+    assert real["lines"] < box["lines"] / 2
+    assert real["plot_area_ha"] == pytest.approx(1.2, rel=0.05)
+
+
+def test_a_polygon_rectangle_plans_identically_to_the_rectangle_path():
+    """Backwards compatibility, pinned: an axis-aligned polygon must produce the
+    same plan as the width/height path it replaces."""
+    plain = flights.mission_plan(12, plot_w_m=200, plot_h_m=60)
+    poly = flights.mission_plan(12, polygon=_poly([(0, 0), (200, 0),
+                                                   (200, 60), (0, 60)]))
+    for key in ("lines", "photos", "path_m", "minutes", "line_direction"):
+        assert poly[key] == plain[key], f"{key} drifted"
+
+
+def test_flight_lines_are_named_in_words_when_they_are_cardinal():
+    poly = flights.mission_plan(12, polygon=_poly([(0, 0), (200, 0),
+                                                   (200, 60), (0, 60)]))
+    assert poly["line_direction"] == "east–west"
+    diagonal = flights.mission_plan(12, polygon=_poly(RECT_100x40, 45))
+    assert "°" in diagonal["line_direction"], "a diagonal needs a bearing"
+
+
+# ── the block model ──────────────────────────────────────────────────────────
+
+def test_a_rectangle_block_gains_points_so_there_is_one_kind_of_shape():
+    """Blocks saved before polygons existed have only bounds. They must come
+    forward with an outline, or half the code would need a second path."""
+    b = flights.normalise_block({"south": 14.12, "west": 121.07,
+                                 "north": 14.13, "east": 121.08})
+    assert len(b["points"]) == 4
+    assert flights.polygon_area_m2([tuple(p) for p in b["points"]]) > 0
+
+
+def test_a_polygon_block_keeps_its_outline_and_derives_its_bounds():
+    pts = [[14.120, 121.070], [14.126, 121.078], [14.121, 121.081]]
+    b = flights.normalise_block({"name": "Wedge", "points": pts})
+    assert len(b["points"]) == 3
+    assert b["south"] == pytest.approx(14.120)
+    assert b["north"] == pytest.approx(14.126)
+    assert b["east"] == pytest.approx(121.081)
+
+
+def test_three_clicks_in_a_line_are_not_a_plot():
+    """Zero area, so there is nothing to fly — a slip while drawing."""
+    assert flights.normalise_block({"points": [[14.12, 121.07], [14.13, 121.08],
+                                               [14.14, 121.09]]}) is None
+
+
+def test_a_double_click_while_drawing_does_not_break_the_outline():
+    pts = [[14.120, 121.070], [14.120, 121.070], [14.126, 121.078],
+           [14.121, 121.081]]
+    b = flights.normalise_block({"points": pts})
+    assert len(b["points"]) == 3, "the repeated corner must be dropped"
+
+
+def test_a_closed_ring_is_stored_open():
+    """Leaflet hands back the first point again to close the ring; storing it
+    would leave a zero-length edge for the line clipper to trip over."""
+    pts = [[14.120, 121.070], [14.126, 121.078], [14.121, 121.081],
+           [14.120, 121.070]]
+    assert len(flights.normalise_block({"points": pts})["points"]) == 3
+
+
+def test_block_dimensions_report_the_plots_own_axes():
+    rotated = _poly(RECT_100x40, 40)
+    b = flights.normalise_block({"points": [list(p) for p in rotated]})
+    d = flights.block_dimensions(b)
+    assert d["width_m"] == pytest.approx(100, rel=0.02)
+    assert d["height_m"] == pytest.approx(40, rel=0.02)
+    assert d["area_ha"] == pytest.approx(0.4, rel=0.02)
+    assert d["vertices"] == 4

@@ -35,6 +35,22 @@
     {% endif %}
 
     <div class="map-overlay-panel map-tools hc-noprint">
+      {# Which patch of downloaded imagery to look at. The farm and the campus are
+         60 km apart, so without this the map opens over Tanauan while you are
+         standing in Lipa, showing sand-coloured nothing. #}
+      {% if cfg.sites|length > 1 %}
+        <div class="map-block" style="padding-bottom:8px">
+          <div class="map-block-head"><span>Location</span></div>
+          <select class="input input-sm" id="map-site" aria-label="Which location to show">
+            {% for site in cfg.sites %}
+              <option value="{{ site.id }}" {{ 'selected' if site.id == cfg.active_site }}>
+                {{ site.name }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+      {% endif %}
+
       {% if flight %}
         <div class="map-modes" role="group" aria-label="What to show">
           <button class="map-mode is-active" data-mode="photos"
@@ -73,8 +89,12 @@
               <button class="block-zoom" data-id="{{ b.id }}"
                       title="Zoom to {{ b.name }}">
                 <span class="block-name">{{ b.name }}</span>
+                {# For a traced plot the two numbers are its own long and short
+                   axes, not a north-south box, so say how many corners it has --
+                   otherwise "80 × 40 m" reads as a rectangle when it isn't. #}
                 <span class="block-dims">{{ b.width_m|round|int }} ×
-                  {{ b.height_m|round|int }} m · {{ '%.2f'|format(b.area_ha) }} ha</span>
+                  {{ b.height_m|round|int }} m · {{ '%.2f'|format(b.area_ha) }} ha{%
+                  if b.vertices and b.vertices > 4 %} · {{ b.vertices }} corners{% endif %}</span>
               </button>
               <button class="block-del" data-id="{{ b.id }}"
                       title="Delete {{ b.name }}" aria-label="Delete {{ b.name }}">×</button>
@@ -90,7 +110,8 @@
 
         <div id="block-edit" hidden>
           <div class="map-block-hint" id="block-hint">
-            Click one corner of the plot, then the opposite corner.</div>
+            Click each corner of the plot. Two clicks makes a rectangle; keep
+            clicking for any other shape.</div>
           <div class="map-block-where" id="block-where">no corners yet</div>
           <div class="field">
             <label for="block-name">Name it</label>
@@ -99,6 +120,7 @@
           </div>
           <div class="map-block-buttons">
             <button class="btn btn-primary btn-sm" id="block-save" disabled>Save</button>
+            <button class="btn btn-secondary btn-sm" id="block-undo" hidden>Undo corner</button>
             <button class="btn btn-ghost btn-sm" id="block-cancel">Cancel</button>
           </div>
         </div>

@@ -150,7 +150,8 @@ def _shell():
     """Context every page needs: the header chips, banner and nav."""
     probe = cam.probe()
     snap = tel.snapshot()
-    cov = tiles_mod.coverage(TILES_DIR)
+    cov = tiles_mod.coverage(
+        TILES_DIR, centre=(config.get("plot_lat"), config.get("plot_lon")))
     banner = None
     if snap["status"] == "stale":
         banner = {"title": "Lost the link to the drone",
@@ -772,9 +773,16 @@ def api_mission_plan():
     wanted = request.args.get("block")
     block = flights_mod.block_by_id(config.get("survey_blocks"), wanted)
     area = flights_mod.test_area_by_id(wanted)
+    polygon = None
     if block:
         dims = flights_mod.block_dimensions(block)
         plot_w, plot_h = dims["width_m"], dims["height_m"]
+        # A drawn block is planned on its outline: the lines follow the plot's
+        # own axis and stop at its edges. Practice areas and the slider path stay
+        # rectangles, because they are sizes rather than places.
+        pts = block.get("points")
+        if pts and len(pts) >= 3:
+            polygon = [(float(a), float(b)) for a, b in pts]
     elif area:
         plot_w, plot_h = area["w"], area["h"]
     else:
@@ -786,7 +794,7 @@ def api_mission_plan():
         fov_v_deg=config.get("fov_v_deg"),
         forward_overlap=num("forward", 0.40),
         side_overlap=num("side", 0.30),
-        plot_w_m=plot_w, plot_h_m=plot_h,
+        plot_w_m=plot_w, plot_h_m=plot_h, polygon=polygon,
         speed_ms=num("speed", flights_mod.DEFAULT_SURVEY_SPEED_MS),
         resolution=tuple(config.get("resolution")),
     )
@@ -889,7 +897,8 @@ def tile(z, x, y):
 
 @app.route("/api/tiles/coverage")
 def api_tiles_coverage():
-    return jsonify({"coverage": tiles_mod.coverage(TILES_DIR),
+    return jsonify({"coverage": tiles_mod.coverage(
+        TILES_DIR, centre=(config.get("plot_lat"), config.get("plot_lon"))),
                     "plan": _tile_plan()})
 
 
@@ -966,7 +975,8 @@ def bootstrap(dev_mode=False, debug=False):
     cam.start_preview()
     tel.start()
 
-    cov = tiles_mod.coverage(TILES_DIR)
+    cov = tiles_mod.coverage(
+        TILES_DIR, centre=(config.get("plot_lat"), config.get("plot_lon")))
     if cov["has_tiles"]:
         log.info("offline map: %s tiles, %s, %s", cov["tiles"],
                  cov["size_label"], cov.get("extent_label", "extent unknown"))

@@ -276,10 +276,53 @@ class TileDownloader:
                                done=done, failed=failed, bytes=total_bytes,
                                finished_at=time.time())
         if done - failed > 0:
+            # Drop any zoom the source answered with a repeated placeholder, so
+            # the map stops at real imagery instead of showing "Map data not yet
+            # available" tiled across the screen.
+            dropped = placeholder_zooms(self.tiles_dir, job.get("ranges"))
+            if dropped:
+                self._discard_zooms(job, dropped)
+                job["zooms"] = [z for z in job["zooms"] if z not in dropped]
+                extra = (f" Zoom {', '.join(str(z) for z in dropped)} had no "
+                         f"imagery here and was discarded.")
+                message += extra
+                with self._lock:
+                    self._state["message"] = message
+                log.info("discarded placeholder zoom(s) %s", dropped)
             self.write_manifest(job, done - failed, total_bytes, failed)
         log.info("tile download finished: %s", message)
 
+    def _discard_zooms(self, job, zooms):
+        """Delete this job's tiles at the given zooms. Only the tiles this job
+        fetched -- another area may have real imagery at the same zoom."""
+        for z in zooms:
+            rng = (job.get("ranges") or {}).get(str(z)) or (job.get("ranges") or {}).get(z)
+            if not rng:
+                continue
+            x0, x1, y0, y1 = rng
+            for x in range(int(x0), int(x1) + 1):
+                for y in range(int(y0), int(y1) + 1):
+                    Path(self.tiles_dir, str(z), str(x), f"{y}.jpg").unlink(
+                        missing_ok=True)
+                xdir = Path(self.tiles_dir, str(z), str(x))
+                if xdir.is_dir() and not any(xdir.iterdir()):
+                    xdir.rmdir()
+            zdir = Path(self.tiles_dir, str(z))
+            if zdir.is_dir() and not any(zdir.iterdir()):
+                zdir.rmdir()
+
     def write_manifest(self, job, tiles, total_bytes, failed):
+        area = {
+            "centre": job["centre"],
+            "bounds": job["bounds"],
+            "tile_bounds": job["tile_bounds"],
+            "tile_area_ha": job["tile_area_ha"],
+            "box_m": job["box_m"],
+            "area_ha": job["area_ha"],
+            "zooms": job["zooms"],
+            "downloaded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "complete": failed == 0,
+        }
         manifest = {
             "centre": job["centre"],
             "bounds": job["bounds"],
@@ -296,10 +339,23 @@ class TileDownloader:
             "source": SOURCE_NAME,
             "attribution": ATTRIBUTION,
             "complete": failed == 0,
+            # Every area ever downloaded, not just this one. Tiles live in a
+            # single global {z}/{x}/{y} tree, so a second download *adds* imagery
+            # rather than replacing it -- but the top-level keys above describe
+            # only the latest job. Without this list, downloading the campus
+            # would make the farm map draw its "edge of the imagery" boundary
+            # 60 km away, over ground it has no tiles for.
+            "areas": imagery_areas(self.read_manifest(), area),
         }
         self.tiles_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_path.write_text(json.dumps(manifest, indent=2))
         return manifest
+
+    def read_manifest(self):
+        try:
+            return json.loads(self.manifest_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
 
     def _count_on_disk(self, zooms):
         out = {}
@@ -312,7 +368,84 @@ class TileDownloader:
 
 # ── coverage reporting ───────────────────────────────────────────────────────
 
-def coverage(tiles_dir):
+_AREA_KEYS = ("centre", "bounds", "tile_bounds", "tile_area_ha", "box_m",
+              "area_ha", "downloaded_at", "complete", "zooms")
+
+# Esri's coverage is not uniform: it has zoom 19 over the Tanauan farm but stops
+# at 18 over De La Salle Lipa, and where it stops it serves a single placeholder
+# image reading "Map data not yet available" rather than a 404. Downloaded
+# blindly that fills the map with hundreds of copies of a picture of the words
+# "no imagery", which looks exactly like a broken dashboard. If nearly every tile
+# at a zoom is byte-identical, that zoom is placeholder and should be dropped --
+# Leaflet then upscales the real imagery from the zoom below, which is blurry but
+# true.
+PLACEHOLDER_SHARE = 0.9
+MIN_TILES_TO_JUDGE = 8
+
+
+def placeholder_zooms(tiles_dir, ranges):
+    """Zoom levels in `ranges` that came back as one repeated placeholder image.
+
+    `ranges` is {zoom: (x0, x1, y0, y1)} — only the tiles this job fetched are
+    considered, so a zoom that is real elsewhere on disk isn't condemned by
+    another area's placeholders.
+    """
+    import collections
+    import hashlib
+    bad = []
+    for z, (x0, x1, y0, y1) in (ranges or {}).items():
+        counts = collections.Counter()
+        for x in range(int(x0), int(x1) + 1):
+            for y in range(int(y0), int(y1) + 1):
+                p = Path(tiles_dir) / str(z) / str(x) / f"{y}.jpg"
+                if p.exists():
+                    counts[hashlib.md5(p.read_bytes()).hexdigest()] += 1
+        total = sum(counts.values())
+        if total >= MIN_TILES_TO_JUDGE and counts:
+            if counts.most_common(1)[0][1] / total >= PLACEHOLDER_SHARE:
+                bad.append(int(z))
+    return sorted(bad)
+
+
+def imagery_areas(manifest, area):
+    """Add `area` to the manifest's area list, replacing one at the same place.
+
+    A manifest written before multiple areas existed has no list, so its
+    top-level keys are folded in as the first entry -- otherwise the imagery
+    already on disk would drop off the record the next time anything downloaded.
+    """
+    areas = manifest.get("areas")
+    if not isinstance(areas, list):
+        areas = ([{k: manifest[k] for k in _AREA_KEYS if k in manifest}]
+                 if manifest.get("centre") else [])
+    def same_place(a):
+        ac, bc = a.get("centre") or [None, None], area["centre"]
+        return (round(ac[0] or 0, 4) == round(bc[0], 4)
+                and round(ac[1] or 0, 4) == round(bc[1], 4))
+    return [a for a in areas if not same_place(a)] + [area]
+
+
+def area_for(areas, centre):
+    """The downloaded area covering `centre`, else the nearest one."""
+    if not areas:
+        return None
+    if centre is None or centre[0] is None:
+        return areas[-1]
+    lat, lon = centre
+    inside = [a for a in areas
+              if (a.get("tile_bounds") or {}).get("south") is not None
+              and a["tile_bounds"]["south"] <= lat <= a["tile_bounds"]["north"]
+              and a["tile_bounds"]["west"] <= lon <= a["tile_bounds"]["east"]]
+    if inside:
+        # Smallest wins: if areas nest, the tighter one is the honest boundary.
+        return min(inside, key=lambda a: a.get("area_ha") or 0)
+    def dist(a):
+        c = a.get("centre") or [0, 0]
+        return (c[0] - lat) ** 2 + (c[1] - lon) ** 2
+    return min(areas, key=dist)
+
+
+def coverage(tiles_dir, centre=None):
     """What is actually on disk, for the "how far is the map downloaded?" UI.
 
     Reads the manifest but verifies against the filesystem, so a manifest left
@@ -366,6 +499,15 @@ def coverage(tiles_dir):
                     "complete"):
             if key in m:
                 result[key] = m[key]
+        # `tiles` and `bytes` stay whole-disk totals -- that is genuinely what is
+        # stored. But the bounds have to describe the area you are *looking at*,
+        # or the map draws its coverage edge around somewhere else entirely.
+        area = area_for(m.get("areas") or [], centre)
+        if area:
+            for key in _AREA_KEYS:
+                if key in area:
+                    result[key] = area[key]
+        result["areas"] = m.get("areas") or []
 
     if result["has_tiles"] and result["box_m"]:
         span = result["box_m"]

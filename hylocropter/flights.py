@@ -599,6 +599,41 @@ def to_latlon(xy, origin):
     return [(lat0 + y / M_PER_DEG_LAT, lon0 + x / k) for x, y in xy]
 
 
+def _segments_cross(p, q, r, s):
+    """Do open segments p-q and r-s properly cross? Touching at an endpoint is
+    not a crossing -- adjacent edges of a polygon always share one."""
+    def side(a, b, c):
+        return ((b[0] - a[0]) * (c[1] - a[1])
+                - (b[1] - a[1]) * (c[0] - a[0]))
+    d1, d2 = side(p, q, r), side(p, q, s)
+    d3, d4 = side(r, s, p), side(r, s, q)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+
+def is_simple_polygon(points):
+    """True if the outline does not cross itself.
+
+    Corners are clicked in whatever order the operator goes round the plot, and
+    clicking them out of order produces a bow tie. Its shoelace area is the
+    difference of the two lobes rather than their sum, so it would report a plot
+    far smaller than the ground it spans and plan a mission to match -- a wrong
+    answer that looks like a valid one. Better to refuse it.
+    """
+    xy = to_local_m(points)
+    n = len(xy)
+    if n < 4:
+        return True                      # a triangle cannot cross itself
+    for i in range(n):
+        a, b = xy[i], xy[(i + 1) % n]
+        for j in range(i + 1, n):
+            # Skip edges sharing a corner: they meet there by construction.
+            if j == i or (j + 1) % n == i or (i + 1) % n == j:
+                continue
+            if _segments_cross(a, b, xy[j], xy[(j + 1) % n]):
+                return False
+    return True
+
+
 def polygon_area_m2(points):
     """Shoelace area, in square metres. Sign-free -- winding order is the
     operator's clicking order and carries no meaning here."""
@@ -779,6 +814,8 @@ def normalise_block(block, index=0):
             return None
         if polygon_area_m2(points) < MIN_BLOCK_AREA_M2:
             return None          # three clicks in a line, not a plot
+        if not is_simple_polygon(points):
+            return None          # corners clicked out of order -- a bow tie
         name = str(block.get("name") or "").strip() or f"Block {index + 1}"
         return {
             "id": str(block.get("id") or "").strip() or f"b{index + 1}",

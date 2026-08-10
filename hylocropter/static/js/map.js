@@ -188,6 +188,7 @@
   const layers = {};            // block id -> Leaflet rectangle
   let drawing = false;
   let draft = [];               // corners clicked so far, in order
+  let lastReason = null;        // why the draft is not saveable yet
   let pending = null;           // the rectangle being drawn
   let rubber = null;            // live rectangle following the cursor
 
@@ -306,25 +307,43 @@
     return 'Block ' + n;
   }
 
-  function rectFrom(a, b) {
-    return {
-      south: Math.min(a.lat, b.lat), north: Math.max(a.lat, b.lat),
-      west: Math.min(a.lng, b.lng), east: Math.max(a.lng, b.lng)
-    };
+  /* One click, one corner — no shortcuts and no modes.
+     There was briefly a rule where two clicks meant "opposite corners of a
+     rectangle", and it was a mistake twice over: the shape jumped when the third
+     click replaced that derived rectangle with a triangle of the clicked points,
+     and the four derived corners were not the points anyone had put down. There
+     is no longer any reason to privilege a north-facing box either, because the
+     planner orients flight lines to the plot's own axis whatever angle it lies
+     at. What you click is what you get. */
+  function draftPoints() {
+    return draft.map(function (p) { return [p.lat, p.lng]; });
   }
 
-  /* Two clicks still mean "opposite corners of a rectangle", because that is the
-     quick common case and it is what everyone's hands already know. From the
-     third click on it becomes a polygon of exactly the points clicked — real
-     plots follow roads and terrain, and forcing them into a north-aligned box
-     plans a mission over the neighbour's ground. */
-  function draftPoints() {
-    if (draft.length === 2) {
-      const r = rectFrom(draft[0], draft[1]);
-      return [[r.south, r.west], [r.south, r.east],
-              [r.north, r.east], [r.north, r.west]];
+  /** Does the outline cross itself? Mirrors flights.is_simple_polygon.
+   *  Clicking corners out of order makes a bow tie, whose shoelace area is the
+   *  difference of its two lobes rather than their sum — so it would report a
+   *  plot far smaller than the ground it spans. Caught here so the hint can say
+   *  why, rather than leaving Save mysteriously dead. */
+  function selfCrossing(pts) {
+    const n = pts.length;
+    if (n < 4) return false;
+    const k = mPerDegLon(pts[0][0]);
+    const xy = pts.map(function (p) {
+      return [(p[1] - pts[0][1]) * k, (p[0] - pts[0][0]) * M_PER_DEG_LAT];
+    });
+    function side(a, b, c) {
+      return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
     }
-    return draft.map(function (p) { return [p.lat, p.lng]; });
+    for (let i = 0; i < n; i++) {
+      const a = xy[i], b = xy[(i + 1) % n];
+      for (let j = i + 1; j < n; j++) {
+        if ((j + 1) % n === i || (i + 1) % n === j) continue;
+        const c = xy[j], d = xy[(j + 1) % n];
+        if ((side(a, b, c) > 0) !== (side(a, b, d) > 0) &&
+            (side(c, d, a) > 0) !== (side(c, d, b) > 0)) return true;
+      }
+    }
+    return false;
   }
 
   /** Shoelace area in m², mirroring flights.polygon_area_m2. */
@@ -341,37 +360,48 @@
   }
 
   function describeDraft(pts) {
-    const lats = pts.map(function (p) { return p[0]; });
-    const lngs = pts.map(function (p) { return p[1]; });
-    const ha = draftArea(pts) / 10000;
-    const box = describeBlock({
-      south: Math.min.apply(null, lats), north: Math.max.apply(null, lats),
-      west: Math.min.apply(null, lngs), east: Math.max.apply(null, lngs)
-    });
-    if (pts.length === 4 && draft.length === 2) return box;
-    return pts.length + ' corners · ' + ha.toFixed(2) + ' ha';
+    if (pts.length < 3) {
+      return pts.length + (pts.length === 1 ? ' corner set' : ' corners set');
+    }
+    return pts.length + ' corners · ' + (draftArea(pts) / 10000).toFixed(2) + ' ha';
   }
 
+  /** The solid shape is exactly what will be saved. Anything following the mouse
+   *  is drawn dashed and unfilled, so the preview can never be mistaken for the
+   *  block — which is precisely what went wrong before. */
   function showRubber(pts, cursor) {
     if (rubber) { rubber.remove(); rubber = null; }
-    const ring = pts.slice();
-    if (cursor) ring.push([cursor.lat, cursor.lng]);
-    if (ring.length < 2) {
-      rubber = L.circleMarker(ring[0], {
-        radius: 4, color: BLOCK_COLOUR, fillColor: BLOCK_COLOUR,
-        fillOpacity: 1, interactive: false
-      }).addTo(map);
-      return;
+    if (!pts.length) return;
+    rubber = L.layerGroup().addTo(map);
+
+    if (pts.length >= 3) {
+      L.polygon(pts, {
+        color: BLOCK_COLOUR, weight: 2.5, fillColor: BLOCK_COLOUR,
+        fillOpacity: 0.10, interactive: false
+      }).addTo(rubber);
+    } else if (pts.length === 2) {
+      L.polyline(pts, {
+        color: BLOCK_COLOUR, weight: 2.5, interactive: false
+      }).addTo(rubber);
     }
-    const shape = ring.length >= 3
-      ? L.polygon(ring, {
-          color: BLOCK_COLOUR, weight: 2, dashArray: cursor ? '5 5' : null,
-          fillColor: BLOCK_COLOUR, fillOpacity: 0.08, interactive: false })
-      : L.polyline(ring, {
-          color: BLOCK_COLOUR, weight: 2, dashArray: '5 5', interactive: false });
-    rubber = L.layerGroup([shape]).addTo(map);
-    // A dot per placed corner, so it is obvious what has been committed and what
-    // is just following the mouse.
+
+    if (cursor) {
+      const to = [cursor.lat, cursor.lng];
+      L.polyline([pts[pts.length - 1], to], {
+        color: BLOCK_COLOUR, weight: 1.5, dashArray: '4 5', interactive: false
+      }).addTo(rubber);
+      // Also show the edge that would close the ring, so the shape you are about
+      // to make is legible before you commit the corner.
+      if (pts.length >= 2) {
+        L.polyline([to, pts[0]], {
+          color: BLOCK_COLOUR, weight: 1.5, dashArray: '4 5', opacity: 0.55,
+          interactive: false
+        }).addTo(rubber);
+      }
+    }
+
+    // A dot per placed corner, filled white so a committed corner reads
+    // differently from the line chasing the cursor.
     pts.forEach(function (p) {
       L.circleMarker(p, {
         radius: 3.5, color: BLOCK_COLOUR, fillColor: '#fff', fillOpacity: 1,
@@ -390,30 +420,28 @@
       return;
     }
     showRubber(pts, draft.length >= 1 ? cursor : null);
-    const usable = pts.length >= 3 && draftArea(pts) >= 25;
+    const crossed = selfCrossing(pts);
+    const usable = pts.length >= 3 && draftArea(pts) >= 25 && !crossed;
     pending = usable ? { points: pts } : null;
+    lastReason = crossed ? 'crossed' : (pts.length >= 3 ? 'thin' : null);
     if (els.save) els.save.disabled = !usable;
-    if (els.where) {
-      els.where.textContent = draft.length === 1
-        ? 'one corner set' : describeDraft(pts);
-    }
+    if (els.where) els.where.textContent = describeDraft(pts);
     if (els.undo) els.undo.hidden = draft.length === 0;
     if (els.hint) els.hint.textContent = draftHint(usable);
   }
 
   function draftHint(usable) {
     if (draft.length === 0) {
-      return 'Click each corner of the plot. Two clicks makes a rectangle; ' +
-        'keep clicking for any other shape.';
+      return 'Click each corner of the plot, going round the edge. Three or ' +
+        'more corners, then save.';
     }
-    if (draft.length === 1) return 'Click the opposite corner for a rectangle.';
-    if (draft.length === 2) {
-      return 'That is a rectangle. Click more corners to trace the real outline ' +
-        'instead, or name it and save.';
-    }
-    return usable
-      ? 'Keep clicking corners, or name it and save.'
-      : 'Those corners are almost in a line — click a corner off to one side.';
+    if (draft.length === 1) return 'Click the next corner along the edge.';
+    if (draft.length === 2) return 'One more corner and it is a shape.';
+    if (usable) return 'Keep going round the plot, or name it and save.';
+    return lastReason === 'crossed'
+      ? 'The outline crosses itself — go round the edge in order, or undo the ' +
+        'last corner.'
+      : 'Those corners are almost in a line — click one off to the side.';
   }
 
   function onDrawClick(latlng) {

@@ -834,3 +834,28 @@ def test_block_dimensions_report_the_plots_own_axes():
     assert d["height_m"] == pytest.approx(40, rel=0.02)
     assert d["area_ha"] == pytest.approx(0.4, rel=0.02)
     assert d["vertices"] == 4
+
+
+def test_an_outline_that_crosses_itself_is_refused():
+    """Clicking corners out of order makes a bow tie. Its shoelace area is the
+    difference of the two lobes rather than their sum, so it would report a plot
+    far smaller than the ground it spans and plan a mission to match — a wrong
+    answer wearing the shape of a valid one."""
+    bowtie = [list(p) for p in _poly([(0, 0), (60, 0), (0, 60), (60, 60)])]
+    assert flights.normalise_block({"points": bowtie}) is None
+    assert not flights.is_simple_polygon([tuple(p) for p in bowtie])
+
+
+def test_a_concave_plot_is_not_mistaken_for_a_crossed_one():
+    """An L-shaped plot is legitimate and common — the check must reject only
+    genuine crossings, or it would forbid exactly the shapes this feature is for."""
+    l_shape = [tuple(p) for p in _poly([(0, 0), (80, 0), (80, 30),
+                                        (40, 30), (40, 60), (0, 60)])]
+    assert flights.is_simple_polygon(l_shape)
+    assert flights.polygon_area_m2(l_shape) == pytest.approx(3600, rel=0.02)
+    assert flights.normalise_block({"points": [list(p) for p in l_shape]})
+
+
+def test_three_corners_can_never_cross():
+    assert flights.is_simple_polygon([tuple(p) for p in _poly(
+        [(0, 0), (60, 0), (30, 50)])])

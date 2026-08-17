@@ -137,12 +137,36 @@ def test_solve_flags_an_implausibly_large_k():
 
 
 def test_default_k_is_not_silently_treated_as_calibrated():
-    """0.8 is Horning's plugin default for a *red* narrowband filter, not a value
-    for this rig (RESEARCH-GAPS.md section 2). Correction is therefore off by
-    default -- this test exists so nobody quietly flips it on."""
-    assert bndvi.DEFAULT_NIR_LEAK_COEF == 0.8
+    """Nobody has measured k for a #2007 on an IMX219, so the default must stay a
+    placeholder and the correction must stay off (RESEARCH-GAPS.md section 2).
+    This test exists so neither is quietly changed.
+
+    0.8 in particular must never come back as the default: it is Horning's value
+    for a narrowband *red* filter with the channels the other way round. On a
+    frame reading NIR 71 / blue 29 it pins BNDVI at +0.97, so every field would
+    look healthy -- the direction of error nobody notices in time.
+    """
     import settings
-    assert settings.DEFAULTS["correct_nir_leakage"] is False
+    assert settings.DEFAULTS["correct_nir_leakage"] is False, \
+        "an unmeasured k must not be applied to anyone's data by default"
+    assert bndvi.DEFAULT_NIR_LEAK_COEF != 0.8, \
+        "0.8 belongs to a different filter — see RESEARCH-GAPS.md section 2"
+    assert 0.0 < bndvi.DEFAULT_NIR_LEAK_COEF < 0.5, \
+        "k for this gel should sit well below Horning's 0.8"
+
+
+def test_an_over_large_k_saturates_the_index():
+    """Why the default matters even though correction is off: k is savage. This
+    pins the failure mode so the number cannot drift upward unnoticed."""
+    frame = np.zeros((4, 4, 3), np.uint8)
+    frame[:, :, 0] = 71        # NIR, as measured on the rig with the gel fitted
+    frame[:, :, 2] = 29        # blue
+    gentle = bndvi.compute_bndvi(frame, correct_nir_leakage=True,
+                                 nir_leak_coef=0.2).mean()
+    horning = bndvi.compute_bndvi(frame, correct_nir_leakage=True,
+                                  nir_leak_coef=0.8).mean()
+    assert horning > 0.95, "0.8 pins this frame at the top of the scale"
+    assert gentle < horning, "a smaller k must leave more of the range in play"
 
 
 # ── bands and statistics ─────────────────────────────────────────────────────

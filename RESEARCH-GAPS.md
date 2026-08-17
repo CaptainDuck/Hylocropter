@@ -84,6 +84,29 @@ Horning says so himself, in the same paragraph:
 So for this rig `k` should be **well below 0.8**. The `SYNTH_LEAK = 0.35` used by dev mode
 is a more plausible neighbourhood.
 
+**`DEFAULT_NIR_LEAK_COEF` is now 0.35, not 0.8** — changed 17 Aug 2026. This is not a
+measurement and must not be written up as one: nobody has characterised a #2007 against an
+IMX219 at these wavelengths. It is a placeholder of the right order of magnitude, chosen so
+the value the UI ships is at least not one belonging to a different filter. `k` for this rig
+remains **unmeasured**, and `correct_nir_leakage` stays **off** by default so nothing is
+silently corrected with a guessed coefficient.
+
+Why the default matters even while the correction is off — it is the slider's starting
+position, and `k` is savage. On a real frame from the rig with the gel fitted, reading
+NIR 71 / blue 29:
+
+| `k` | visible blue | BNDVI |
+|---|---|---|
+| 0.00 | 28.9 | +0.42 |
+| 0.20 | 14.7 | +0.66 |
+| 0.35 | 4.1 | +0.89 |
+| 0.50 | 1.0 | +0.97 |
+| 0.80 | 1.0 | +0.97 |
+
+Anything from about 0.5 upward pins the index at the top of its range, so every field reads
+healthy — the direction of error nobody notices until the crop is lost. `test_index.py` pins
+both facts: that the default is not 0.8, and that 0.8 saturates this frame.
+
 **Where the bogus attribution probably came from.** On the canonical Pi NoIR + Rosco page,
 [What's that blue thing doing here?](https://www.raspberrypi.com/news/whats-that-blue-thing-doing-here/),
 Chris Fastie writes that with this rig you get *"healthy plants between 0.2 and 0.8"* —

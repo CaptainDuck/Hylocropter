@@ -376,7 +376,7 @@
         await HC.api('/api/settings', {
           method: 'PATCH',
           body: {
-            exposure_us: 5000, gain: 2.0, nir_leak_coef: 0.8,
+            exposure_us: 5000, gain: 2.0, nir_leak_coef: 0.35,
             correct_nir_leakage: false, threshold_healthy: 0.3,
             threshold_moderate: 0.1, preview_fps: 12
           }

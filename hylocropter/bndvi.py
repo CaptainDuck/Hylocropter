@@ -118,7 +118,20 @@ DEFAULT_MIN_SIGNAL = 20
 # 0.8. Measure your own: solve_leak_coef() does it from a white reference in one
 # step, and the Debug view wires it to a drag-a-box gesture.
 # See RESEARCH-GAPS.md section 2.
-DEFAULT_NIR_LEAK_COEF = 0.8
+#
+# So the default is NOT 0.8. It is not a measured figure either -- nobody has
+# characterised the #2007 against an IMX219 at these wavelengths, and this rig's
+# own value is still unmeasured. 0.35 is where RESEARCH-GAPS.md section 2 lands
+# as "a more plausible neighbourhood", and it is the same number the synthetic
+# scenes model (SYNTH_LEAK), which keeps the two consistent. It is a placeholder
+# with the right order of magnitude, not an answer.
+#
+# It matters mostly as a starting position, because correct_nir_leakage is off by
+# default. When it is switched on, k is savage: on a frame reading NIR 71 /
+# blue 29, k = 0.35 gives BNDVI +0.89 and anything above 0.5 pins it at +0.97.
+# An over-large k makes everything read healthy, which is the direction that gets
+# a farmer to do nothing about a sick field. Measure it before trusting it.
+DEFAULT_NIR_LEAK_COEF = 0.35
 
 # ── the one true colormap ────────────────────────────────────────────────────
 # Single source of truth for how a BNDVI value becomes a colour. Mirrored

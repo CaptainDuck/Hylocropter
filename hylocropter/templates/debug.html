@@ -139,9 +139,16 @@
         </div>
         <input type="range" id="k" min="0" max="1.2" step="0.05" value="{{ cfg.nir_leak_coef }}"
                aria-label="NIR leakage coefficient k">
-        <div class="control-note">0.8 is Public Lab's plugin default, but for a
-          <em>red</em> filter — for the Rosco #2007 expect
-          <strong>well below that</strong>. Measure it below.</div>
+        <div class="control-note">0.35 is a <strong>placeholder, not a
+          measurement</strong> — nobody has characterised the #2007 against this
+          sensor. Public Lab's 0.8 belongs to a narrowband <em>red</em> filter
+          with the channels the other way round, so it is far too big here.
+          <br><br>
+          k bites hard: on a frame reading NIR 71 / blue 29, k&nbsp;=&nbsp;0.35
+          gives BNDVI +0.89 and anything past 0.5 pins it at +0.97. Too large a k
+          makes everything look healthy, which is the direction nobody notices.
+          <strong>Measure your own below</strong>, on a white card in daylight —
+          indoors there is no NIR for it to reflect.</div>
       </div>
 
       <div class="control-group">

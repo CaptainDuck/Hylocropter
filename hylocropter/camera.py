@@ -48,6 +48,11 @@ PREVIEW_W, PREVIEW_H = bndvi.SYNTH_W, bndvi.SYNTH_H
 # frame" instead of hanging the request.
 FRAME_WAIT_S = 2.0
 
+# How long to wait for the camera to shut down before walking away from it. A
+# healthy camera stops in milliseconds; one that is going to take longer than
+# this is one that has stopped answering at all.
+CLOSE_WAIT_S = 1.5
+
 
 def _downsample(frame):
     """Nearest-neighbour shrink to PREVIEW_W x PREVIEW_H.
@@ -247,17 +252,44 @@ class CameraService:
         return cam
 
     def _close_locked(self):
-        if self._picam is None:
+        """Let go of the camera without ever blocking on it.
+
+        Picamera2.stop() dispatches to the camera event loop and waits with no
+        timeout, and close() calls stop() first. When the sensor has fallen off
+        the CSI bus -- a ribbon knocked while the drone is handled -- that event
+        loop never answers, so neither call returns.
+
+        Tearing down on the caller's thread therefore just moved the hang: the
+        frame timeout fired correctly, then this blocked forever holding _lock,
+        which froze the preview and every capture queued behind it exactly as
+        before. So the teardown runs on a throwaway thread and we wait only
+        briefly for it.
+        """
+        cam, self._picam = self._picam, None
+        if cam is None:
             return
-        try:
-            self._picam.stop()
-        except Exception:
-            pass
-        try:
-            self._picam.close()
-        except Exception:
-            pass
-        self._picam = None
+
+        def teardown():
+            try:
+                cam.stop()
+            except Exception:
+                pass
+            try:
+                cam.close()
+            except Exception:
+                pass
+
+        closer = threading.Thread(target=teardown, name="camera-close",
+                                  daemon=True)
+        closer.start()
+        closer.join(CLOSE_WAIT_S)
+        if closer.is_alive():
+            # The abandoned object still holds the device, but a camera that
+            # cannot be stopped cannot be reopened either -- and there is no
+            # version of this where the operator is better off with the whole
+            # dashboard frozen than with it saying the camera has gone.
+            log.warning("camera did not shut down within %.1fs — abandoning it; "
+                        "check the CSI ribbon", CLOSE_WAIT_S)
 
     def apply_controls(self):
         """Re-apply exposure/gain after a settings change.

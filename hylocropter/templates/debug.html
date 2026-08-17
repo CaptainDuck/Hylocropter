@@ -181,6 +181,17 @@
           White reflects about equally in NIR and visible, so it should read
           BNDVI 0. Drag a box over a white card in the raw feed and this solves
           k = B/R − 1 directly.
+          <br><br>
+          <strong>Fill the frame with the card, then box the middle third.</strong>
+          Lens-shading correction is deliberately off (its tables assume an
+          IR-cut filter this rig does not have), so the corners read darker and
+          not equally per channel — the centre is the only flat part of the field.
+          <br><br>
+          Matte, not glossy, tilted slightly off-axis so it does not glare; in the
+          same light as the plants; <strong>outdoors</strong>, because indoors
+          there is no NIR for it to reflect. Check above that it is not clipping
+          before solving. Bond paper works but its optical brighteners lift blue,
+          which pushes k high — a grey card is better.
         </div>
         <button class="btn btn-secondary btn-block" id="solve-k" disabled>
           Solve k from the selection

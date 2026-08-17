@@ -82,6 +82,19 @@
             <figcaption>Blue — visible + NIR leak</figcaption>
           </figure>
         </div>
+
+        {# The numbers behind those three pictures. Exposure is the setting that
+           silently wrecks everything else: too dark and the index divides noise
+           by noise, too bright and clipped channels make it read flat. Neither
+           is visible by eye on a small canvas, so put the figures on screen. #}
+        <div class="stats" style="margin-top:12px"
+             title="Aim for 40–200 on NIR and Blue with nothing clipping. Below 15 the index is measuring sensor noise; above 250 the channels flatten and BNDVI reads falsely mid-range.">
+          {{ stat('NIR level', '—', 'lvl-nir') }}
+          {{ stat('Green level', '—', 'lvl-green') }}
+          {{ stat('Blue level', '—', 'lvl-blue') }}
+          {{ stat('Clipped', '—', 'lvl-clipped') }}
+        </div>
+        <div class="control-note" id="lvl-verdict">Waiting for the first frame…</div>
       </div>
 
       <div class="card elev-sm">
@@ -181,8 +194,34 @@
         </div>
         <input type="range" id="gain" min="1" max="8" step="0.1" value="{{ cfg.gain }}"
                aria-label="Analogue gain">
-        <div class="control-note">AWB and auto-exposure stay locked. Aim for a
-          white card's brightest pixels at 180–230.</div>
+        <div class="control-note">AWB and auto-exposure stay locked, so these two
+          are the only brightness controls — nothing adjusts itself.
+          <strong>Aim for NIR and Blue between 40 and 200</strong> in the channel
+          panel above, with Clipped at 0%. On a white card the brightest pixels
+          should read 180–230.
+          <br><br>
+          Raise <em>exposure</em> first and gain only when you run out of
+          exposure: gain amplifies the sensor's noise along with the signal, and
+          the index divides one channel by another, so noise hurts it twice.
+          <br><br>
+          <strong>In flight, keep exposure at or below 5000 µs.</strong> At 3 m/s
+          a 100 000 µs shot smears 30 cm of ground; the long exposures below are
+          for the bench only.</div>
+
+        {# Measured on this rig, and offered as starting points rather than
+           answers — the light on the day is what decides. The point of the
+           readout above is that you do not have to trust this table. #}
+        <div class="control-sub" style="margin-top:10px"><span>Starting points</span></div>
+        <table class="kv" style="font-size:12.5px;width:100%">
+          <tr><td>Full sun, open sky</td><td style="text-align:right">1000–2000 µs · gain 1</td></tr>
+          <tr><td>Outdoors, roofed or overcast</td><td style="text-align:right">4000–8000 µs · gain 1–2</td></tr>
+          <tr><td>Bright shade / rainy</td><td style="text-align:right">10 000–20 000 µs · gain 2–4</td></tr>
+          <tr><td>Indoors, LED light (bench only)</td><td style="text-align:right">60 000–120 000 µs · gain 6–8</td></tr>
+        </table>
+        <div class="control-note">Fitting the gel costs about 3⅓ stops — roughly
+          ten times the exposure — so set these <em>with the gel on</em>. Indoor
+          light also has almost no NIR, so an indoor reading tells you the rig
+          works but not what a plant scores.</div>
       </div>
 
       <div class="control-group">

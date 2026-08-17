@@ -75,6 +75,41 @@
     setText('live-std', none ? '—' : s.std.toFixed(3));
     setText('live-range', none ? '—' : HC.fmt(s.min) + ' … ' + HC.fmt(s.max));
     setText('sanity-note', sanityNote(s, feed.channelMeans()));
+    paintLevels(feed.channelMeans());
+  }
+
+  /* Exposure is the setting that quietly ruins everything downstream, and you
+     cannot judge it by eye on a 160x120 canvas — a frame reading 0.5 out of 255
+     and one reading 60 both just look dark. So show the numbers and say plainly
+     which way to move. */
+  function paintLevels(ch) {
+    if (!ch) return;
+    const clipped = feed.clippedPct();
+    setText('lvl-nir', ch.nir.toFixed(1));
+    setText('lvl-green', ch.green === null ? '—' : ch.green.toFixed(1));
+    setText('lvl-blue', ch.blue.toFixed(1));
+    setText('lvl-clipped', clipped.toFixed(1) + '%');
+
+    const lo = Math.min(ch.nir, ch.blue);
+    let note;
+    if (clipped > 2) {
+      note = 'Clipping ' + clipped.toFixed(1) + '% — channels are pinned at 255 ' +
+        'and BNDVI reads falsely flat. Shorten the exposure, or drop the gain.';
+    } else if (lo < 15) {
+      note = 'Far too dark (' + lo.toFixed(1) + ') — this is the sensor noise ' +
+        'floor, and the index is dividing noise by noise. Raise the exposure a ' +
+        'lot: it takes roughly ten times more with the gel fitted.';
+    } else if (lo < 40) {
+      note = 'Dark but readable (' + lo.toFixed(1) + '). Usable at a push; more ' +
+        'exposure will make the reading steadier.';
+    } else if (lo > 200) {
+      note = 'Very bright (' + lo.toFixed(1) + ') and close to clipping. Shorten ' +
+        'the exposure a little to leave headroom.';
+    } else {
+      note = 'Well exposed (' + lo.toFixed(1) + '), nothing clipping. This is ' +
+        'the range the index is trustworthy in.';
+    }
+    setText('lvl-verdict', note);
   }
 
   /** The most valuable thing on this page: what the numbers mean, in words. */

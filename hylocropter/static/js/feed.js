@@ -171,6 +171,17 @@
     };
   };
 
+  /** Share of pixels pinned at the top of the scale, on either channel the index
+   *  uses. A clipped channel cannot record a difference, so BNDVI collapses
+   *  toward the middle and healthy plants read as moderate. */
+  Feed.prototype.clippedPct = function () {
+    if (!this.nir) return 0;
+    const n = this.w * this.h, nir = this.nir, blue = this.blue;
+    let c = 0;
+    for (let i = 0; i < n; i++) if (nir[i] >= 255 || blue[i] >= 255) c++;
+    return (c / n) * 100;
+  };
+
   /* ── painting ───────────────────────────────────────────────────────────── */
 
   Feed.prototype._blit = function (canvas, fill) {

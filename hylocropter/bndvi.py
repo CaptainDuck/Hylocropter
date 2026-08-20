@@ -70,6 +70,20 @@ from pathlib import Path
 
 import numpy as np
 
+# picamera2's format names describe the byte order in memory, not the numpy axis
+# order. "RGB888" therefore hands back an array indexed B, G, R -- and this whole
+# project reads index 0 as NIR, so requesting it silently inverted the index.
+#
+# Measured on the rig against the raw Bayer (the sensor's pattern is unambiguous),
+# pedestal-corrected and compared as ratios because the ISP rescales:
+#
+#     raw truth                  R:G:B = 1.00 : 1.99 : 2.91
+#     RGB888, read as R,G,B      1.00 : 0.66 : 0.33   inverted
+#     BGR888, read as R,G,B      1.00 : 1.99 : 3.00   correct
+#
+# So BGR888 is the one that yields R, G, B. Do not "fix" this back to RGB888.
+CAPTURE_ARRAY_FORMAT = "BGR888"
+
 DEFAULT_RESOLUTION = (3280, 2464)
 DEFAULT_WARMUP_S = 3
 DEFAULT_GAIN = 2.0
@@ -389,7 +403,7 @@ def capture_image(
         # queue=False matters too: the default lets capture_array() hand back a
         # frame that completed during warmup, i.e. before the locked values took.
         config = cam.create_still_configuration(
-            main={"size": tuple(resolution), "format": "RGB888"},
+            main={"size": tuple(resolution), "format": CAPTURE_ARRAY_FORMAT},
             controls=wanted,
             queue=False,
         )
@@ -476,7 +490,7 @@ def capture_raw_dng(dng_path, resolution=DEFAULT_RESOLUTION,
         wanted = locked_controls(gain, exposure_us, colour_gains,
                                  available=cam.camera_controls)
         config = cam.create_still_configuration(
-            main={"size": tuple(resolution), "format": "RGB888"},
+            main={"size": tuple(resolution), "format": CAPTURE_ARRAY_FORMAT},
             raw={},
             controls=wanted,
             queue=False,

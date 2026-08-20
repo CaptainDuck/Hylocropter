@@ -20,7 +20,7 @@ Two jobs:
    they all come from one array. The Pi's only job per frame is grab →
    downsample → send.
 
-The preview runs its own 640x480 RGB888 `main` stream and downsamples from it.
+The preview runs its own 640x480 `main` stream and downsamples from it.
 It deliberately does not use a `lores` stream: on the Pi 4's VC4 pipeline lores
 must be YUV420, and converting that back to RGB would run the very colour matrix
 that `neutralise_isp` exists to switch off -- green would bleed into both the NIR
@@ -228,7 +228,7 @@ class CameraService:
             s.get("gain"), s.get("exposure_us"), tuple(s.get("colour_gains")),
             available=cam.camera_controls)
         config = cam.create_preview_configuration(
-            main={"size": (640, 480), "format": "RGB888"},
+            main={"size": (640, 480), "format": bndvi.CAPTURE_ARRAY_FORMAT},
             controls=self._wanted,
         )
         try:

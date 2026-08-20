@@ -483,3 +483,23 @@ def test_band_render_masks_the_same_pixels():
     rgba = bndvi.bndvi_to_bands_rgb(b, mask=bndvi.low_signal_mask(a))
     assert (rgba[0, :, 3] == 0).all()
     assert (rgba[1, :, 3] == 255).all()
+
+
+def test_the_capture_format_is_the_one_that_actually_yields_rgb():
+    """picamera2 names formats by byte order in memory, not numpy axis order, so
+    "RGB888" returns an array indexed B,G,R. Every channel read in this project
+    assumes index 0 is NIR, so requesting RGB888 silently inverted the index and
+    made vegetation read negative.
+
+    Measured on the rig against the raw Bayer, as ratios (the ISP rescales, so
+    absolute values cannot be compared):
+
+        raw truth              R:G:B = 1.00 : 1.99 : 2.91
+        RGB888 as R,G,B                1.00 : 0.66 : 0.33   inverted
+        BGR888 as R,G,B                1.00 : 1.99 : 3.00   correct
+
+    No test can catch this without a camera -- the synthetic path builds its
+    arrays directly and is unaffected, which is exactly why 259 tests passed
+    while the real camera was inverted. So this pins the string.
+    """
+    assert bndvi.CAPTURE_ARRAY_FORMAT == "BGR888"

@@ -338,6 +338,37 @@
       });
     }
 
+    const autoBtn = HC.$('#auto-expose');
+    if (autoBtn) {
+      autoBtn.addEventListener('click', async function () {
+        autoBtn.disabled = true;
+        const label = autoBtn.textContent;
+        autoBtn.textContent = 'Metering… hold the card still';
+        setText('auto-expose-result', 'Letting the light meter settle (6s)…');
+        try {
+          const res = await HC.api('/api/calibrate/auto-exposure',
+                                   { method: 'POST', body: {} });
+          setText('auto-expose-result', res.message);
+          // Move the sliders to match, so the panel is not lying about what the
+          // camera is now set to.
+          if (res.ok && res.settings) {
+            [['#exposure', 'exposure_us'], ['#gain', 'gain']].forEach(function (p) {
+              const el = HC.$(p[0]);
+              if (el && res.settings[p[1]] !== undefined) {
+                el.value = res.settings[p[1]];
+                el.dispatchEvent(new Event('input'));
+              }
+            });
+          }
+        } catch (err) {
+          setText('auto-expose-result', err.message);
+        } finally {
+          autoBtn.disabled = false;
+          autoBtn.textContent = label;
+        }
+      });
+    }
+
     const retryBtn = HC.$('#retry-camera');
     if (retryBtn) {
       retryBtn.addEventListener('click', function () {

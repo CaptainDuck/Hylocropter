@@ -200,6 +200,25 @@
       </div>
 
       <div class="control-group">
+        <div class="control-head"><span>Set the exposure automatically</span></div>
+        <div class="control-note" style="margin-bottom:6px">
+          Fill the frame with a <strong>deep blue card</strong> in the light you
+          will be flying in, then press this. The camera's own light meter runs
+          for six seconds, and whatever it settles on is pinned as the fixed
+          settings — so you are not guessing at numbers, and captures stay
+          comparable afterwards.
+          <br><br>
+          Blue rather than white: behind the gel the sensor only sees blue and
+          NIR, so a blue card is something in the passband to balance on. It
+          refuses the reading if the card is clipped or too dark to trust.
+        </div>
+        <button class="btn btn-secondary btn-block" id="auto-expose">
+          Meter off the card and set exposure
+        </button>
+        <div class="control-note" id="auto-expose-result"></div>
+      </div>
+
+      <div class="control-group">
         <div class="control-head">
           <span>Exposure</span>
           <span class="val" id="exposure-label">{{ cfg.exposure_us }} µs</span>

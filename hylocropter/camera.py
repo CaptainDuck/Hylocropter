@@ -291,6 +291,49 @@ class CameraService:
             log.warning("camera did not shut down within %.1fs — abandoning it; "
                         "check the CSI ribbon", CLOSE_WAIT_S)
 
+    def auto_expose(self):
+        """Borrow the camera's automatics to meter a reference card.
+
+        Returns (result, error). Runs with the preview paused and the capture
+        lock held, because it deliberately unpins exposure, gain and white
+        balance -- and a frame grabbed while that is happening is not comparable
+        with anything. The locks are re-applied in `finally` whatever happens,
+        so a failure here cannot leave the rig quietly running on automatic.
+        """
+        if self.using_synthetic():
+            return None, ("These are synthetic frames — there is no camera to "
+                          "meter. Run this at the rig.")
+        if not self._lock.acquire(blocking=False):
+            return None, "The camera is busy with a capture."
+        self._paused.set()
+        try:
+            cam = self._open_locked()
+            return bndvi.auto_expose(cam)
+        except Exception as exc:
+            log.exception("auto-exposure failed")
+            return None, str(exc)
+        finally:
+            # Whatever happened, put the camera back on fixed settings.
+            try:
+                self._apply_locked()
+            except Exception:
+                # If even that fails the camera is in a bad way; drop it so the
+                # preview loop reopens from scratch rather than carrying on with
+                # the automatics live.
+                self._close_locked()
+            self._paused.clear()
+            self._lock.release()
+
+    def _apply_locked(self):
+        """Re-pin the current settings on the open camera. Caller holds _lock."""
+        if self._picam is None:
+            return
+        s = self.settings
+        self._wanted = bndvi.locked_controls(
+            s.get("gain"), s.get("exposure_us"), tuple(s.get("colour_gains")),
+            available=self._picam.camera_controls)
+        self._picam.set_controls(self._wanted)
+
     def apply_controls(self):
         """Re-apply exposure/gain after a settings change.
 

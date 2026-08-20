@@ -100,6 +100,11 @@ DEFAULT_THRESHOLD_MODERATE = 0.1
 # setting, and RESEARCH-GAPS.md section 11.
 DEFAULT_MIN_SIGNAL = 20
 
+# How long to let the camera's own AE and AWB settle before reading back what
+# they chose. Six seconds is generous: the AGC converges in about two, and the
+# cost of being slow here is nothing next to pinning a half-converged exposure.
+AUTO_EXPOSE_SETTLE_S = 6.0
+
 # NIR-leakage correction: blue Bayer pixels also pick up some NIR. We
 # approximate visible_blue as max(eps, B - k*R) where k is the NIR
 # responsivity ratio of the blue vs red Bayer pixels.
@@ -753,6 +758,79 @@ def solve_leak_coef(nir_mean, blue_mean):
             f"Solved k = {k:.2f}, which is unusually high. Check the box covers "
             f"only the white reference and that it is not in shade.")
     return round(k, 3), f"Solved k = {k:.2f} from the white reference."
+
+
+def auto_expose(cam, settle_s=AUTO_EXPOSE_SETTLE_S):
+    """Use the camera's own automatics, once, as a light meter.
+
+    Point the camera at a reference card filling the frame, in the light you are
+    going to fly in. AE picks an exposure that puts the card mid-scale and AWB
+    picks colour gains that make it read neutral. We then read those numbers back
+    and pin them. The automatics are borrowed for six seconds, not left running:
+    everything the index depends on is still shot on fixed settings.
+
+    This replaces guessing at exposure by hand, which is genuinely hard -- a
+    frame reading 0.5 out of 255 and one reading 60 look identical on screen.
+
+    **A deep blue card is the right target.** Behind the gel the sensor only sees
+    blue and NIR, so a blue card gives the gains something in the passband to
+    balance on. A white card outdoors is dominated by NIR, and balancing against
+    that pushes the gains somewhere unhelpful.
+
+    Note this is a different normalisation from solve_leak_coef(): that subtracts
+    NIR leakage from blue, this scales the channels. Both aim to make a reference
+    read about zero. Applying both at full strength double-corrects, so measure
+    k *after* setting the gains, on the same card, and let it come out small.
+
+    Returns (result, error). `result` carries what the automatics chose plus the
+    levels they achieved, so the caller can refuse an answer taken off a clipped
+    or black frame -- a card that was blown out gives a confidently wrong number.
+    """
+    avail = cam.camera_controls or {}
+    # set_controls, not controls= in a configuration: AeEnable is pre-processed
+    # into the two *Mode controls only on the queueRequest path, which is this
+    # one. The modes are set explicitly too, for the reason locked_controls
+    # documents -- and because ExposureTime is now *ignored* while the mode is
+    # Auto, so the old settings have to be genuinely handed back to the AGC.
+    wanted = {"AeEnable": True, "AwbEnable": True}
+    if "ExposureTimeMode" in avail:
+        wanted["ExposureTimeMode"] = 0        # Auto
+    if "AnalogueGainMode" in avail:
+        wanted["AnalogueGainMode"] = 0        # Auto
+    cam.set_controls(wanted)
+    time.sleep(max(1.0, float(settle_s)))
+
+    request = cam.capture_request()
+    try:
+        metadata = request.get_metadata() or {}
+        frame = request.make_array("main")
+    finally:
+        request.release()
+
+    exposure_us = int(metadata.get("ExposureTime") or 0)
+    gain = float(metadata.get("AnalogueGain") or 0.0)
+    if exposure_us <= 0 or gain <= 0:
+        return None, ("The camera did not report an exposure it had settled on. "
+                      "Try again, and check the preview is running.")
+
+    colour_gains = metadata.get("ColourGains")
+    colour_gains = ([float(colour_gains[0]), float(colour_gains[1])]
+                    if colour_gains else list(DEFAULT_COLOUR_GAINS))
+
+    nir = frame[:, :, 0].astype(np.float32)
+    blue = frame[:, :, 2].astype(np.float32)
+    clipped = float(np.mean((nir >= 254) | (blue >= 254)) * 100)
+    level = float(min(nir.mean(), blue.mean()))
+
+    return {
+        "exposure_us": exposure_us,
+        "gain": round(gain, 2),
+        "colour_gains": [round(colour_gains[0], 3), round(colour_gains[1], 3)],
+        "nir": round(float(nir.mean()), 1),
+        "blue": round(float(blue.mean()), 1),
+        "clipped_pct": round(clipped, 1),
+        "level": round(level, 1),
+    }, None
 
 
 def bndvi_stats(bndvi, threshold_healthy=DEFAULT_THRESHOLD_HEALTHY,

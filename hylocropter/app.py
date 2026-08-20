@@ -712,6 +712,58 @@ def api_solve_k():
                     "region": region})
 
 
+@app.route("/api/calibrate/auto-exposure", methods=["POST"])
+def api_auto_exposure():
+    """Set exposure, gain and colour gains from a reference card.
+
+    Borrows the camera's own AE and AWB for a few seconds, reads back what they
+    settled on, and pins it. Judging exposure by hand is genuinely hard -- a
+    frame reading 0.5 out of 255 and one reading 60 look the same on screen -- and
+    getting it wrong is what makes BNDVI read zero everywhere.
+
+    The automatics are used as a light meter, not left running: the values are
+    stored as fixed settings, so captures stay comparable across a flight.
+    """
+    result, error = cam.auto_expose()
+    if result is None:
+        return _json_error(error or "could not meter the scene", 503)
+
+    # Refuse a reading taken off a frame that was clipped or black. Either gives
+    # a confident number that means nothing, which is worse than no answer.
+    if result["clipped_pct"] > 2.0:
+        return jsonify({"ok": False, "measured": result, "applied": False,
+                        "message": (
+                            f"The card is blown out — {result['clipped_pct']:.1f}% "
+                            f"of it is clipped, so the metering is unreliable. "
+                            f"Move out of direct glare, or shade the card, and "
+                            f"try again.")})
+    if result["level"] < 15:
+        return jsonify({"ok": False, "measured": result, "applied": False,
+                        "message": (
+                            f"Even on automatic the card only reached "
+                            f"{result['level']:.0f} of 255. There is not enough "
+                            f"light here to measure anything — this rig needs "
+                            f"daylight, and indoor light has almost no NIR.")})
+
+    applied, warnings = config.update({
+        "exposure_us": result["exposure_us"],
+        "gain": result["gain"],
+        "colour_gains": result["colour_gains"],
+    })
+    applog.activity(log, "Auto-exposed from a reference card: %d us, gain %.2f, "
+                         "colour gains %s", result["exposure_us"],
+                    result["gain"], result["colour_gains"])
+    return jsonify({
+        "ok": True, "measured": result, "applied": bool(applied),
+        "settings": applied, "warnings": warnings,
+        "message": (
+            f"Set to {applied.get('exposure_us', result['exposure_us'])} µs at "
+            f"gain {applied.get('gain', result['gain'])}. The card reads "
+            f"NIR {result['nir']:.0f} / blue {result['blue']:.0f} — now solve k "
+            f"on the same card, and it should come out small."),
+    })
+
+
 @app.route("/api/diagnose/filter", methods=["POST"])
 def api_diagnose_filter():
     """Is the blue gel actually in the light path?

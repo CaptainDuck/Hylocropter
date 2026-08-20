@@ -331,3 +331,71 @@ def test_destructive_system_actions_require_confirmation(client):
     body = res.get_json()
     if res.status_code == 200:
         assert body.get("confirm_required") or body.get("confirm") is not True
+
+
+# ── metering off a reference card ────────────────────────────────────────────
+#
+# Judging exposure by hand is the thing that wasted a whole afternoon: a frame
+# reading 0.5 out of 255 and one reading 60 look identical on screen, and a
+# wrongly exposed frame makes BNDVI read zero everywhere. This borrows the
+# camera's own light meter for six seconds and pins what it found.
+
+def test_metering_needs_a_camera(client):
+    """In dev mode there is nothing to meter, and saying so is better than
+    returning numbers measured off a synthetic frame."""
+    res = client.post("/api/calibrate/auto-exposure", json={})
+    assert res.status_code == 503
+    assert "synthetic" in res.get_json()["error"].lower()
+
+
+def test_a_blown_out_card_is_refused(client, monkeypatch):
+    """A clipped card gives a confident number that means nothing. Refusing is
+    the whole point -- accepting it would pin an exposure that hides the error."""
+    import app as app_mod
+    monkeypatch.setattr(app_mod.cam, "auto_expose", lambda: ({
+        "exposure_us": 8000, "gain": 1.0, "colour_gains": [1.0, 1.0],
+        "nir": 250.0, "blue": 252.0, "clipped_pct": 41.0, "level": 250.0}, None))
+    body = client.post("/api/calibrate/auto-exposure", json={}).get_json()
+    assert body["ok"] is False
+    assert body["applied"] is False
+    assert "blown out" in body["message"]
+
+
+def test_a_card_in_the_dark_is_refused(client, monkeypatch):
+    import app as app_mod
+    monkeypatch.setattr(app_mod.cam, "auto_expose", lambda: ({
+        "exposure_us": 200000, "gain": 16.0, "colour_gains": [1.0, 1.0],
+        "nir": 4.0, "blue": 3.0, "clipped_pct": 0.0, "level": 3.0}, None))
+    body = client.post("/api/calibrate/auto-exposure", json={}).get_json()
+    assert body["ok"] is False
+    assert body["applied"] is False
+    assert "not enough light" in body["message"]
+
+
+def test_a_good_reading_is_pinned_as_fixed_settings(client, monkeypatch):
+    """The automatics are a light meter, not a mode: what they found has to end
+    up stored as fixed settings, or the flight is shot on auto-exposure."""
+    import app as app_mod
+    monkeypatch.setattr(app_mod.cam, "auto_expose", lambda: ({
+        "exposure_us": 6400, "gain": 3.7, "colour_gains": [1.4, 2.1],
+        "nir": 96.0, "blue": 88.0, "clipped_pct": 0.2, "level": 88.0}, None))
+    body = client.post("/api/calibrate/auto-exposure", json={}).get_json()
+    assert body["ok"] is True
+    stored = client.get("/api/settings").get_json()
+    assert stored["exposure_us"] == 6400
+    assert stored["gain"] == 3.7
+    assert stored["colour_gains"] == [1.4, 2.1]
+
+
+def test_an_out_of_range_reading_is_clamped_not_rejected(client, monkeypatch):
+    """Settings clamping still applies — the meter is not allowed to write a
+    value the rest of the dashboard would refuse."""
+    import app as app_mod
+    monkeypatch.setattr(app_mod.cam, "auto_expose", lambda: ({
+        "exposure_us": 999999, "gain": 99.0, "colour_gains": [1.0, 1.0],
+        "nir": 90.0, "blue": 90.0, "clipped_pct": 0.0, "level": 90.0}, None))
+    body = client.post("/api/calibrate/auto-exposure", json={}).get_json()
+    assert body["ok"] is True
+    stored = client.get("/api/settings").get_json()
+    assert stored["exposure_us"] == 200000
+    assert stored["gain"] == 16.0

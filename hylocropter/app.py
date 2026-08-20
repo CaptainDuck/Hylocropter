@@ -712,6 +712,59 @@ def api_solve_k():
                     "region": region})
 
 
+@app.route("/api/camera/automatics", methods=["POST"])
+def api_camera_automatics():
+    """Turn the camera's own AE/AWB on or off. Diagnostic, session-only.
+
+    Deliberately not a setting. Auto white balance rebalances red against blue
+    every frame and the index is a ratio of those two channels, so a flight shot
+    this way cannot be compared with itself -- and a restart must not preserve it.
+    """
+    payload = request.get_json(silent=True) or {}
+    on = bool(payload.get("on"))
+    enabled = cam.set_auto(on)
+    return jsonify({
+        "auto": enabled,
+        "message": (
+            "The automatics are running. Exposure and white balance now move by "
+            "themselves, so nothing measured while this is on is comparable — it "
+            "is for seeing what the camera would pick. Turns itself off on restart."
+            if enabled else
+            "Back on fixed settings. Captures are comparable again."),
+    })
+
+
+@app.route("/api/camera/pin-current", methods=["POST"])
+def api_camera_pin_current():
+    """Save what the camera is doing right now as the flight defaults.
+
+    Reads frame metadata rather than the stored settings, so it captures what the
+    hardware actually did -- which is the point after the automatics have been
+    choosing for themselves. Also drops back to fixed settings, because pinning
+    values while auto is still running would be immediately untrue.
+    """
+    state, error = cam.camera_state()
+    if state is None:
+        return _json_error(error or "could not read the camera", 503)
+    patch = {"exposure_us": state["exposure_us"], "gain": state["gain"]}
+    if state["colour_gains"]:
+        patch["colour_gains"] = state["colour_gains"]
+    applied, warnings = config.update(patch)
+    if state["auto"]:
+        cam.set_auto(False)
+    applog.activity(log, "Pinned the camera's current state as the defaults: "
+                         "%d us, gain %.2f, colour gains %s",
+                    state["exposure_us"], state["gain"], state["colour_gains"])
+    return jsonify({
+        "ok": True, "measured": state, "settings": applied, "warnings": warnings,
+        "message": (
+            f"Saved: {applied.get('exposure_us', state['exposure_us'])} µs, gain "
+            f"{applied.get('gain', state['gain'])}, colour gains "
+            f"{applied.get('colour_gains', state['colour_gains'])}. Every future "
+            f"capture and flight uses these until you change them."),
+    })
+
+
 @app.route("/api/calibrate/auto-exposure", methods=["POST"])
 def api_auto_exposure():
     """Set exposure, gain and colour gains from a reference card.

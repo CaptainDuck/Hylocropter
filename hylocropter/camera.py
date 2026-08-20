@@ -88,6 +88,7 @@ class CameraService:
         self._wanted = {}
         self._synthetic_override = dev_mode
         self._last_error = None
+        self._auto = False                      # diagnostic unlock, never persisted
 
     # ── availability ──────────────────────────────────────────────────────
 
@@ -325,14 +326,65 @@ class CameraService:
             self._lock.release()
 
     def _apply_locked(self):
-        """Re-pin the current settings on the open camera. Caller holds _lock."""
+        """Put the current settings on the open camera. Caller holds _lock."""
         if self._picam is None:
+            return
+        if self._auto:
+            # Diagnostic unlock: let the automatics run so the operator can see
+            # what the camera would choose. Deliberately not persisted anywhere.
+            self._wanted = {}
+            self._picam.set_controls(
+                bndvi.auto_controls(self._picam.camera_controls))
             return
         s = self.settings
         self._wanted = bndvi.locked_controls(
             s.get("gain"), s.get("exposure_us"), tuple(s.get("colour_gains")),
             available=self._picam.camera_controls)
         self._picam.set_controls(self._wanted)
+
+    def auto_enabled(self):
+        return self._auto
+
+    def set_auto(self, on):
+        """Turn the camera's own AE/AWB on or off, for diagnosis only.
+
+        Session-only by design. Auto white balance rebalances red against blue
+        every frame, and BNDVI is a ratio of exactly those two channels, so a
+        flight shot this way is not comparable with itself let alone another
+        flight. Leaving it enabled must never be something a restart preserves.
+        """
+        self._auto = bool(on)
+        with self._lock:
+            self._apply_locked()
+        log.info("camera automatics %s", "ON (diagnostic)" if self._auto else "off")
+        return self._auto
+
+    def camera_state(self):
+        """What the camera reports it is actually doing, right now.
+
+        Read from frame metadata rather than from settings, so it tells you what
+        the hardware did rather than what it was asked -- which is the whole
+        point when the automatics have been choosing for themselves.
+        """
+        meta = dict(self._frame_meta or {})
+        if self.using_synthetic():
+            return None, "These are synthetic frames — there is nothing to read."
+        with self._lock:
+            if self._picam is None:
+                return None, "The camera is not open."
+            try:
+                md = self._picam.capture_metadata() or {}
+            except Exception as exc:
+                return None, str(exc)
+        gains = md.get("ColourGains")
+        return {
+            "exposure_us": int(md.get("ExposureTime") or 0),
+            "gain": round(float(md.get("AnalogueGain") or 0.0), 2),
+            "colour_gains": ([round(float(gains[0]), 3), round(float(gains[1]), 3)]
+                             if gains else None),
+            "auto": self._auto,
+            "source": meta.get("source", "camera"),
+        }, None
 
     def apply_controls(self):
         """Re-apply exposure/gain after a settings change.

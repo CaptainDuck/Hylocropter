@@ -184,6 +184,29 @@ class CameraUnavailable(RuntimeError):
 
 # ── camera capture ────────────────────────────────────────────────────────────
 
+def auto_controls(available=None):
+    """Hand exposure, gain and white balance back to the camera's own algorithms.
+
+    The inverse of locked_controls(), and used for two things: metering off a
+    reference card, and the Debug view's diagnostic unlock. Leaving these on
+    during a flight is exactly what makes captures incomparable -- AWB adjusts
+    the red and blue gains independently per frame, and the index is a ratio of
+    those two channels -- so nothing persists this state.
+
+    Set via set_controls(), never via controls= in a configuration: AeEnable is
+    pre-processed into the two *Mode controls only on the queueRequest path.
+    The modes go too, because ExposureTime is now ignored while the mode is Auto,
+    so the AGC has to be genuinely given the reins rather than half of them.
+    """
+    avail = available or {}
+    controls = {"AeEnable": True, "AwbEnable": True}
+    if "ExposureTimeMode" in avail:
+        controls["ExposureTimeMode"] = 0      # Auto
+    if "AnalogueGainMode" in avail:
+        controls["AnalogueGainMode"] = 0      # Auto
+    return controls
+
+
 def locked_controls(gain=DEFAULT_GAIN, exposure_us=DEFAULT_EXPOSURE_US,
                     colour_gains=DEFAULT_COLOUR_GAINS, available=None):
     """The control dict that pins the camera so BNDVI stays comparable.
@@ -800,18 +823,7 @@ def auto_expose(cam, settle_s=AUTO_EXPOSE_SETTLE_S):
     levels they achieved, so the caller can refuse an answer taken off a clipped
     or black frame -- a card that was blown out gives a confidently wrong number.
     """
-    avail = cam.camera_controls or {}
-    # set_controls, not controls= in a configuration: AeEnable is pre-processed
-    # into the two *Mode controls only on the queueRequest path, which is this
-    # one. The modes are set explicitly too, for the reason locked_controls
-    # documents -- and because ExposureTime is now *ignored* while the mode is
-    # Auto, so the old settings have to be genuinely handed back to the AGC.
-    wanted = {"AeEnable": True, "AwbEnable": True}
-    if "ExposureTimeMode" in avail:
-        wanted["ExposureTimeMode"] = 0        # Auto
-    if "AnalogueGainMode" in avail:
-        wanted["AnalogueGainMode"] = 0        # Auto
-    cam.set_controls(wanted)
+    cam.set_controls(auto_controls(cam.camera_controls))
     time.sleep(max(1.0, float(settle_s)))
 
     request = cam.capture_request()

@@ -231,8 +231,50 @@
         </div>
         <input type="range" id="gain" min="1" max="8" step="0.1" value="{{ cfg.gain }}"
                aria-label="Analogue gain">
-        <div class="control-note">AWB and auto-exposure stay locked, so these two
-          are the only brightness controls — nothing adjusts itself.
+        <div class="control-sub" style="margin-top:10px">
+          <span>Red gain (NIR channel)</span>
+          <span class="val" id="cg-red-label">{{ '%.2f'|format(cfg.colour_gains[0]) }}</span>
+        </div>
+        <input type="range" id="cg-red" min="0.1" max="8" step="0.05"
+               value="{{ cfg.colour_gains[0] }}" aria-label="Red colour gain">
+        <div class="control-sub">
+          <span>Blue gain (visible channel)</span>
+          <span class="val" id="cg-blue-label">{{ '%.2f'|format(cfg.colour_gains[1]) }}</span>
+        </div>
+        <input type="range" id="cg-blue" min="0.1" max="8" step="0.05"
+               value="{{ cfg.colour_gains[1] }}" aria-label="Blue colour gain">
+        <div class="control-note">These are the fixed white-balance gains — the
+          equivalent of <code>awb_gains</code>. They are the direct lever on the
+          NIR-versus-blue balance: if blue outreads NIR on foliage and everything
+          comes out negative, this is what fixes it. Metering off a card sets them
+          for you.</div>
+
+        <div class="control-head" style="margin-top:12px">
+          <span>Let the automatics run</span>
+          <span class="val" id="auto-label">Off</span>
+        </div>
+        <div class="toggle-pair">
+          <button class="btn btn-secondary is-on" data-auto="off">Off</button>
+          <button class="btn btn-secondary" data-auto="on">On</button>
+        </div>
+        <div class="control-note">Diagnostic only, and it resets on restart.
+          Turning it on hands exposure and white balance back to the camera so you
+          can see what it would choose — but auto white balance rebalances red
+          against blue <em>every frame</em>, and the index is a ratio of exactly
+          those two channels, so <strong>nothing measured while this is on is
+          comparable</strong>. Use "Save as flight defaults" to keep what it found.</div>
+
+        <button class="btn btn-primary btn-block" style="margin-top:10px" id="pin-current">
+          Save as flight defaults
+        </button>
+        <div class="control-note" id="pin-current-result">Reads back what the camera
+          is actually doing and stores it, so every future capture and flight uses
+          it. (The sliders above already save as you move them — this is for
+          capturing what the automatics picked.)</div>
+
+        <div class="control-note" style="margin-top:12px">These two
+          are the only brightness controls while the locks are on — nothing
+          adjusts itself.
           <strong>Aim for NIR and Blue between 40 and 200</strong> in the channel
           panel above, with Clipped at 0%. On a white card the brightest pixels
           should read 180–230.

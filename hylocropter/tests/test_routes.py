@@ -399,3 +399,54 @@ def test_an_out_of_range_reading_is_clamped_not_rejected(client, monkeypatch):
     stored = client.get("/api/settings").get_json()
     assert stored["exposure_us"] == 200000
     assert stored["gain"] == 16.0
+
+
+# ── the diagnostic unlock ────────────────────────────────────────────────────
+#
+# Auto white balance rebalances red against blue every frame, and BNDVI is a
+# ratio of exactly those two channels. So the unlock is a diagnostic, and the
+# thing that must be guaranteed is that it never becomes a stored setting.
+
+def test_unlocking_the_automatics_is_not_a_stored_setting(client):
+    before = client.get("/api/settings").get_json()
+    client.post("/api/camera/automatics", json={"on": True})
+    after = client.get("/api/settings").get_json()
+    assert after == before, \
+        "the unlock must leave no trace in settings — a restart has to clear it"
+
+
+def test_unlocking_says_the_readings_are_not_comparable(client):
+    body = client.post("/api/camera/automatics", json={"on": True}).get_json()
+    assert body["auto"] is True
+    assert "comparable" in body["message"]
+    off = client.post("/api/camera/automatics", json={"on": False}).get_json()
+    assert off["auto"] is False
+
+
+def test_pinning_needs_a_real_camera(client):
+    """Nothing to read off synthetic frames, and inventing values would be worse
+    than refusing."""
+    res = client.post("/api/camera/pin-current", json={})
+    assert res.status_code == 503
+
+
+def test_pinning_stores_what_the_camera_reported(client, monkeypatch):
+    import app as app_mod
+    monkeypatch.setattr(app_mod.cam, "camera_state", lambda: ({
+        "exposure_us": 6400, "gain": 3.7, "colour_gains": [1.4, 2.1],
+        "auto": True, "source": "camera"}, None))
+    monkeypatch.setattr(app_mod.cam, "set_auto", lambda on: bool(on))
+    body = client.post("/api/camera/pin-current", json={}).get_json()
+    assert body["ok"] is True
+    stored = client.get("/api/settings").get_json()
+    assert stored["exposure_us"] == 6400
+    assert stored["gain"] == 3.7
+    assert stored["colour_gains"] == [1.4, 2.1]
+
+
+def test_colour_gains_are_clamped_before_reaching_the_camera(client):
+    """Zero would be accepted by libcamera and quietly kill a channel — and the
+    index is a ratio, so a dead channel is not a dim picture but no reading."""
+    client.patch("/api/settings", json={"colour_gains": [0, 99]})
+    gains = client.get("/api/settings").get_json()["colour_gains"]
+    assert gains == [0.1, 8.0]

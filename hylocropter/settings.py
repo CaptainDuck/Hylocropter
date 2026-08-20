@@ -165,6 +165,11 @@ _LIMITS = {
     "tile_zoom_max": (10, 21),
 }
 
+# Red and blue gain bounds. libcamera accepts a much wider range, but outside
+# this the channel being scaled is either crushed or saturated, and the index is
+# a ratio of exactly those two channels.
+COLOUR_GAIN_RANGE = (0.1, 8.0)
+
 _INTS = {"exposure_us", "preview_fps", "plot_box_m", "min_signal",
          "trigger_distance_m", "trigger_interval_s", "mavlink_baud",
          "tile_zoom_min", "tile_zoom_max", "setup_step"}
@@ -430,7 +435,11 @@ class Settings:
                 raise ValueError("unsupported resolution")
             return value
         if key == "colour_gains":
-            return [float(raw[0]), float(raw[1])]
+            # Clamped like every other number. Zero or negative would be
+            # accepted by libcamera and quietly kill a channel.
+            lo, hi = COLOUR_GAIN_RANGE
+            return [min(max(float(raw[0]), lo), hi),
+                    min(max(float(raw[1]), lo), hi)]
         if key == "blocks":
             return [str(b) for b in raw if str(b).strip()]
         if key == "setup_done_steps":

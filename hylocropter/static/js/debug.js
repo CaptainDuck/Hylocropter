@@ -338,6 +338,70 @@
       });
     }
 
+    // Colour gains go to the camera, so these need a round-trip like exposure.
+    // They are stored as a pair, so both are sent whichever one moved.
+    function saveColourGains() {
+      const r = parseFloat(HC.$('#cg-red').value);
+      const b = parseFloat(HC.$('#cg-blue').value);
+      HC.saveSetting({ colour_gains: [r, b] });
+    }
+    HC.slider(HC.$('#cg-red'), HC.$('#cg-red-label'),
+      function (v) { return v.toFixed(2); }, saveColourGains);
+    HC.slider(HC.$('#cg-blue'), HC.$('#cg-blue-label'),
+      function (v) { return v.toFixed(2); }, saveColourGains);
+
+    HC.$$('[data-auto]').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        const on = btn.dataset.auto === 'on';
+        try {
+          const res = await HC.api('/api/camera/automatics',
+                                   { method: 'POST', body: { on: on } });
+          HC.$$('[data-auto]').forEach(function (b) {
+            b.classList.toggle('is-on', (b.dataset.auto === 'on') === res.auto);
+          });
+          setText('auto-label', res.auto ? 'ON — not comparable' : 'Off');
+          setText('pin-current-result', res.message);
+        } catch (err) {
+          HC.toast(err.message, true);
+        }
+      });
+    });
+
+    const pinBtn = HC.$('#pin-current');
+    if (pinBtn) {
+      pinBtn.addEventListener('click', async function () {
+        pinBtn.disabled = true;
+        try {
+          const res = await HC.api('/api/camera/pin-current',
+                                   { method: 'POST', body: {} });
+          setText('pin-current-result', res.message);
+          // The camera drops back to fixed settings, so reflect that here too.
+          HC.$$('[data-auto]').forEach(function (b) {
+            b.classList.toggle('is-on', b.dataset.auto === 'off');
+          });
+          setText('auto-label', 'Off');
+          const s = res.settings || {};
+          [['#exposure', 'exposure_us'], ['#gain', 'gain']].forEach(function (p) {
+            const el = HC.$(p[0]);
+            if (el && s[p[1]] !== undefined) {
+              el.value = s[p[1]];
+              el.dispatchEvent(new Event('input'));
+            }
+          });
+          if (s.colour_gains) {
+            [['#cg-red', 0], ['#cg-blue', 1]].forEach(function (p) {
+              const el = HC.$(p[0]);
+              if (el) { el.value = s.colour_gains[p[1]]; el.dispatchEvent(new Event('input')); }
+            });
+          }
+        } catch (err) {
+          setText('pin-current-result', err.message);
+        } finally {
+          pinBtn.disabled = false;
+        }
+      });
+    }
+
     const autoBtn = HC.$('#auto-expose');
     if (autoBtn) {
       autoBtn.addEventListener('click', async function () {

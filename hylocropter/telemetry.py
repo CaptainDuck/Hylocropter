@@ -37,6 +37,12 @@ log = logging.getLogger("hylocropter.telemetry")
 HEARTBEAT_TIMEOUT_S = 3.0
 RECONNECT_DELAY_S = 5.0
 
+# A controller that has just rebooted starts heartbeating before it will answer
+# the mission protocol, so the first re-read after a reboot can be dropped with
+# no reply and no error. Ask again a few times before giving up.
+MISSION_REREAD_ATTEMPTS = 3
+MISSION_REREAD_DELAY_S = 3.0
+
 # ArduPilot copter mode numbers -> names, for the modes this project sees.
 # AUTO is the one that matters: a mission is running.
 COPTER_MODES = {
@@ -87,6 +93,8 @@ class TelemetryService:
         self._last_heartbeat = 0.0
         self._armed = False
         self._mission_items = {}
+        self._mission_retries = 0
+        self._mission_asked_at = 0.0
         self._unavailable_reason = None
 
     # ── lifecycle ─────────────────────────────────────────────────────────
@@ -208,6 +216,7 @@ class TelemetryService:
         log.info("MAVLink connected on %s (system %s)", target,
                  self._conn.target_system)
         self._request_streams()
+        self._mission_retries = MISSION_REREAD_ATTEMPTS
         self._request_mission()
         return True
 
@@ -226,15 +235,33 @@ class TelemetryService:
             log.debug("could not request data streams: %s", exc)
 
     def _request_mission(self):
+        self._mission_asked_at = time.time()
         try:
             self._conn.mav.mission_request_list_send(
                 self._conn.target_system, self._conn.target_component)
         except Exception as exc:
             log.debug("could not request mission list: %s", exc)
 
+    def _retry_mission_read(self):
+        """Re-ask for the mission if a post-reboot read went unanswered.
+
+        There is no error to catch here — a request the controller was not yet
+        ready for is simply never answered — so the only signal is the absence
+        of a MISSION_COUNT, and the only remedy is to ask again.
+        """
+        if not self._mission_retries:
+            return
+        if time.time() - self._mission_asked_at < MISSION_REREAD_DELAY_S:
+            return
+        self._mission_retries -= 1
+        log.debug("mission re-read unanswered, %d attempt(s) left",
+                  self._mission_retries)
+        self._request_mission()
+
     def _pump(self):
         seen = 0
         while not self._stop.is_set():
+            self._retry_mission_read()
             msg = self._conn.recv_match(blocking=True, timeout=1.0)
             if msg is None:
                 # Timeout is normal; snapshot() decides if that means stale.
@@ -248,7 +275,17 @@ class TelemetryService:
         kind = msg.get_type()
 
         if kind == "HEARTBEAT":
-            self._last_heartbeat = time.time()
+            # A controller reboot never closes this port — it is a memory-
+            # mapped PL011, not a USB adapter that vanishes — so _pump() keeps
+            # running and _connect() does not, which means the stream and
+            # mission requests made there are never re-issued. Spot the gap
+            # here instead: a rebooted controller holds whatever mission it now
+            # has, and without a re-read the snapshot would keep reporting the
+            # previous one for the rest of the session.
+            now = time.time()
+            gap = now - self._last_heartbeat if self._last_heartbeat else 0.0
+            resumed = gap > HEARTBEAT_TIMEOUT_S
+            self._last_heartbeat = now
             armed = bool(msg.base_mode & 0x80)   # MAV_MODE_FLAG_SAFETY_ARMED
             mode = COPTER_MODES.get(msg.custom_mode, f"mode {msg.custom_mode}")
             self._set(status="connected", connected=True, armed=armed, mode=mode,
@@ -261,6 +298,12 @@ class TelemetryService:
                         self.on_arm_change(armed, self.snapshot())
                     except Exception:
                         log.exception("arm-change handler failed")
+            if resumed:
+                log.info("link resumed after %.0fs without a heartbeat — "
+                         "re-reading streams and mission", gap)
+                self._request_streams()
+                self._mission_retries = MISSION_REREAD_ATTEMPTS
+                self._request_mission()
 
         elif kind in ("SYS_STATUS", "BATTERY_STATUS"):
             pct = getattr(msg, "battery_remaining", None)
@@ -299,9 +342,16 @@ class TelemetryService:
             })
 
         elif kind == "MISSION_COUNT":
+            self._mission_retries = 0
             with self._lock:
                 self._snap["mission"]["count"] = msg.count
                 self._snap["mission"]["loaded"] = msg.count > 0
+                if not msg.count:
+                    # _update_mission_geometry() bails out below two points, so
+                    # a mission that has been cleared would otherwise keep
+                    # reporting the altitude and spacing of the old one.
+                    self._snap["mission"]["altitude_m"] = None
+                    self._snap["mission"]["line_spacing_m"] = None
             self._mission_items.clear()
             # Pull the items so we can report altitude and line spacing.
             for seq in range(min(msg.count, 200)):

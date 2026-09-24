@@ -108,13 +108,16 @@ reintroduced — fix it.
 Blue Bayer pixels also pick up NIR. `compute_bndvi` has an opt-in mode that
 estimates visible blue as `max(ε, B − k·R)` before the index.
 
-`DEFAULT_NIR_LEAK_COEF = 0.8` **is** Ned Horning's — it's the hard-coded default
-in Public Lab's PhotoMonitoringPlugin. But it is for a MidOpt DB660/850
-narrowband *red* filter with the channels reversed, justified by red and blue
-pixels having similar NIR sensitivity at 850 nm. The Rosco #2007 passes NIR
-broadly from ~695 nm, where Horning himself notes red pixels are much more
-NIR-sensitive — so the right `k` here is well below 0.8. Do not describe 0.8 as
-a value for this rig (`RESEARCH-GAPS.md` §2).
+`DEFAULT_NIR_LEAK_COEF` is **0.35**. It used to be 0.8, which **is** Ned
+Horning's — the hard-coded default in Public Lab's PhotoMonitoringPlugin — but
+that figure is for a MidOpt DB660/850 narrowband *red* filter with the channels
+reversed, justified by red and blue pixels having similar NIR sensitivity at
+850 nm. The Rosco #2007 passes NIR broadly from ~695 nm, where Horning himself
+notes red pixels are much more NIR-sensitive, so 0.8 is far too high here.
+Do not describe 0.8 as a value for this rig (`RESEARCH-GAPS.md` §2).
+
+0.35 is not a measured value either — it matches `SYNTH_LEAK`, the dev-mode
+simulation constant. It is a defensible placeholder, not a calibration.
 
 The right answer is to measure it. A white reference must read BNDVI ≈ 0, so
 `R = B − k·R` gives **`k = B/R − 1`** — implemented as `bndvi.solve_leak_coef()`
@@ -260,8 +263,13 @@ truncate the index.
 
 ## Things that are known-unfinished
 
-Read `RESEARCH-GAPS.md` before assuming a number is meaningful. Briefly: `k = 0.8`
-is unsourced; the BNDVI thresholds are generic rather than dragon-fruit values;
-the MAVLink path has never seen real hardware; `static/tiles/` ships empty; and
-the thesis contradicts itself on in-flight vs post-flight processing (this
-implementation captures in flight and processes after landing).
+Read `RESEARCH-GAPS.md` before assuming a number is meaningful. Briefly: the
+default `k = 0.35` is a placeholder rather than a measured value; the BNDVI
+thresholds are generic rather than dragon-fruit values; the MAVLink path has
+never seen real hardware; and the thesis contradicts itself on in-flight vs
+post-flight processing (this implementation captures in flight and processes
+after landing).
+
+`static/tiles/` is **no longer empty** — 306 tiles at zoom 16–19 (4.8 MB) are
+committed, covering the default vicinity box. Settings reports exactly how far
+coverage extends, so check there rather than assuming.

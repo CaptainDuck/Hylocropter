@@ -11,13 +11,17 @@
   if (!root) return;
   const recording = root.dataset.recording;
 
+  // These describe what you configured in Mission Planner -- the controller
+  // fires the shutter and the Pi captures on the MAVLink event it sends back.
+  // Say what to set up, not what the Pi does, because the Pi does not decide.
   const TRIGGER_NOTES = {
-    distance: 'The Pi watches GPS and takes a photo every few metres along the ' +
-      'mission line. Best for even coverage.',
-    waypoint: 'One photo at every waypoint in the Mission Planner file. Fewer ' +
-      'photos, tied to your plan.',
-    interval: 'A steady timer, ignoring position. Simplest, but coverage depends ' +
-      'on how fast you fly.'
+    distance: 'Set CAM_TRIGG_DIST, or put DO_SET_CAM_TRIGG_DIST in the mission. ' +
+      'The controller counts distance flown and fires the shutter. Best for ' +
+      'even coverage.',
+    waypoint: 'Put a DO_DIGICAM_CONTROL command at each waypoint. Fewer photos, ' +
+      'tied to your plan, and the aircraft can hold still for each one.',
+    interval: 'A steady timer, ignoring position. Coverage then depends on how ' +
+      'fast you fly.'
   };
 
   function paintTriggerNote() {

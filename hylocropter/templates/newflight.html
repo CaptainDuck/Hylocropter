@@ -80,8 +80,13 @@
           </div>
         </div>
         <button class="btn btn-ghost" id="override-trigger" style="align-self:flex-start;margin-top:2px">
-          Set it here instead</button>
+          Record it here instead</button>
       {% else %}
+        <div style="font-size:13px;margin-bottom:10px;color:color-mix(in srgb, var(--color-text) 62%, transparent)">
+          The flight controller fires the shutter, not the Pi. This only records
+          which method you set up in Mission Planner, so each photo is labelled
+          with it — changing it here does not change when the drone shoots.
+        </div>
         <div class="seg" style="width:100%;max-width:430px">
           {% for mode, label in [('distance', 'Every ' ~ cfg.trigger_distance_m ~ ' m'),
                                  ('waypoint', 'At each waypoint'),
@@ -166,7 +171,7 @@
         <div class="kv-row"><span>GPS</span><span id="tel-gps">—</span></div>
         <div class="kv-row"><span>Trigger</span><span>{{
           'From the mission' if cfg.trigger_source == 'mission'
-          else cfg.trigger_mode ~ ' (set here)' }}</span></div>
+          else cfg.trigger_mode ~ ' (recorded here)' }}</span></div>
       </div>
     </div>
   {% endif %}

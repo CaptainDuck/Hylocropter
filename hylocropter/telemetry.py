@@ -272,6 +272,23 @@ class TelemetryService:
                 self._set(messages_seen=seen)
 
     def _handle(self, msg):
+        # Not everything on this bus is the aircraft. A ground station sharing
+        # the link -- Mission Planner announces itself as system 255, component
+        # 190, MAV_TYPE_GCS -- heartbeats at 1 Hz with base_mode flags of its
+        # own, and those describe the station, not the airframe. Ours arrives
+        # with 0x80 set, which decodes as ARMED. Accepting both sources flips
+        # the snapshot every second and, far worse, makes _on_arm_change() open
+        # a flight on one heartbeat and close it (starting processing) on the
+        # next. Take the aircraft's traffic and nothing else.
+        #
+        # target_system is latched by pymavlink from the first non-GCS
+        # heartbeat, so it is the autopilot even when a station heartbeats
+        # first; until it is set there is nothing to compare against and we let
+        # messages through rather than going deaf.
+        target = getattr(self._conn, "target_system", 0)
+        if target and msg.get_srcSystem() != target:
+            return
+
         kind = msg.get_type()
 
         if kind == "HEARTBEAT":

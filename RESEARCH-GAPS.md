@@ -541,11 +541,13 @@ and that "this loop repeats until the flight concludes". The Hardware section sa
 components are "for **post flight** image processing", and Scope says heatmaps are
 retrieved "after processing" on landing.
 
-I implemented **capture in flight, process after landing**, because a Pi 4 cannot
-reliably run 8 MP BNDVI plus figure rendering per frame at a ~5 s cadence while also
-servicing MAVLink — and because your own mockup has a dedicated post-landing "Processing"
-view with a progress ring, so the design already assumes batch. Pick one story and make
-Chapter 2 consistent.
+I implemented **capture in flight, process after landing** (`recorder.py`). The first
+real mission settled it: analysing each photo as it was taken cost 5–10 s per trigger,
+while the survey asked for one a second, and most photos were lost. In the air the Pi
+now only grabs a frame from a camera held open for the whole flight and writes it to
+disk; the BNDVI and figures run after the drone disarms. Your own mockup has a dedicated
+post-landing "Processing" view with a progress ring, so the design already assumed batch.
+Pick one story and make Chapter 2 consistent.
 
 **Other things the paper never specifies, which the code now has to decide:**
 

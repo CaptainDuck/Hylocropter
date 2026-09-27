@@ -479,3 +479,26 @@ def test_without_a_camera_a_real_capture_fails_instead_of_faking_one(
         app_mod.cam.dev_mode = True
     assert res.status_code >= 400, res.data[:300]
     assert len(app_mod.store.captures()) == before
+
+
+def test_a_whole_mission_arm_trigger_disarm_ends_with_every_photo_on_the_flight(
+        client):
+    """Arm, three camera triggers, disarm: three analysed photos on one closed
+    flight. The first real mission kept one."""
+    import time
+    app_mod._on_arm_change(True, {})
+    flight = app_mod._recording_flight()
+    assert flight is not None
+    for i in range(3):
+        app_mod._on_camera_trigger({"lat": 14.1265 + i * 1e-5, "lon": 121.0768,
+                                    "source": "mavlink"})
+    app_mod._on_arm_change(False, {})
+    for _ in range(300):
+        if not app_mod._processing["running"]:
+            break
+        time.sleep(0.05)
+    assert not app_mod._processing["running"]
+    photos = app_mod.store.captures(flight_id=flight["id"])
+    assert len(photos) == 3
+    assert app_mod.store.flight(flight["id"])["status"] != "recording"
+    assert client.get(f"/capture/{photos[0]['id']}").status_code == 200

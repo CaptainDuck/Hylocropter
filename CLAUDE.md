@@ -51,7 +51,7 @@ python hylocropter/app.py --debug                    # Flask reloader on
 
 ```bash
 pip install -r hylocropter/requirements-dev.txt
-pytest                            # 195 tests, from the repo root or anywhere
+pytest                            # 297 tests, from the repo root or anywhere
 pytest hylocropter/tests/test_index.py -v
 ```
 
@@ -139,7 +139,16 @@ the memory on a Pi 4.
   the project's minimal reproducer.
 - **`camera.py`** — the *single owner* of the camera. One lock arbitrates the
   preview loop and full captures; picamera2 does not tolerate concurrent callers.
-  A capture pauses the preview and resumes it afterwards.
+  A capture pauses the preview and resumes it afterwards. A capture uses
+  synthetic frames **only when asked** (`synthetic_requested()`: dev mode or the
+  Debug button) — never because a probe said the camera was missing; that once
+  filed generated frames as real mission photos. The preview may still fall back.
+- **`recorder.py`** — a flight's photos. Triggers only queue (never block the
+  MAVLink thread); a grabber takes one frame from a camera **held open in still
+  mode for the whole flight** (warm-up paid once, not per photo); a writer saves
+  the raw frame as `.npy` in `<flight>/pending/`. After disarm,
+  `analyse_pending()` runs each through the unchanged `capture_and_analyse`.
+  The per-trigger pipeline it replaced lost most photos on the first real mission.
 - **`telemetry.py`** — pymavlink reader thread. **Read-only: it never arms the
   aircraft.** ⚠️ Has never run against real hardware — see `RESEARCH-GAPS.md` §7.
 - **`flights.py`** — flight/capture store, map-grid binning, legacy migration.

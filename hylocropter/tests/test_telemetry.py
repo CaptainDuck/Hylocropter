@@ -251,3 +251,39 @@ def test_messages_pass_before_a_target_is_latched(svc):
     svc._conn.target_system = 0
     svc._handle(heartbeat(src_system=7))
     assert svc.snapshot()["mode"] == "STABILIZE"
+
+
+# ── camera triggers ──────────────────────────────────────────────────────────
+
+def _feedback(idx, lat=141265000, lng=1210768000):
+    return Msg("CAMERA_FEEDBACK", img_idx=idx, lat=lat, lng=lng,
+               alt_msl=330.0, alt_rel=6.0)
+
+
+@pytest.fixture
+def shots(svc):
+    taken = []
+    svc.on_trigger = taken.append
+    return taken
+
+
+def test_one_shutter_is_one_photo_when_both_messages_arrive(svc, shots):
+    """The same shot reported as FEEDBACK and TRIGGER used to take two photos."""
+    svc._handle(_feedback(1))
+    svc._handle(Msg("CAMERA_TRIGGER", seq=1, time_usec=0))
+    svc._handle(_feedback(2))
+    svc._handle(Msg("CAMERA_TRIGGER", seq=2, time_usec=0))
+    assert len(shots) == 2
+    assert all(g["source"] == "mavlink" for g in shots)
+
+
+def test_a_repeated_feedback_is_not_a_new_photo(svc, shots):
+    svc._handle(_feedback(5))
+    svc._handle(_feedback(5))
+    assert len(shots) == 1
+
+
+def test_a_controller_that_only_sends_trigger_still_takes_photos(svc, shots):
+    for i in range(3):
+        svc._handle(Msg("CAMERA_TRIGGER", seq=i, time_usec=0))
+    assert len(shots) == 3

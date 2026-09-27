@@ -96,6 +96,8 @@ class TelemetryService:
         self._mission_retries = 0
         self._mission_asked_at = 0.0
         self._unavailable_reason = None
+        self._seen_feedback = False
+        self._last_img_idx = None
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -389,6 +391,8 @@ class TelemetryService:
                 self._snap["mission"]["current"] = msg.seq
 
         elif kind in ("CAMERA_TRIGGER", "CAMERA_FEEDBACK"):
+            if not self._first_report_of_shot(msg, kind):
+                return
             with self._lock:
                 self._snap["trigger_count"] += 1
             if self.on_trigger:
@@ -396,6 +400,24 @@ class TelemetryService:
                     self.on_trigger(self._trigger_geo(msg))
                 except Exception:
                     log.exception("camera-trigger handler failed")
+
+    def _first_report_of_shot(self, msg, kind):
+        """One shutter, one photo.
+
+        A controller can report the same shot as both CAMERA_TRIGGER and
+        CAMERA_FEEDBACK, and each used to take a photo. FEEDBACK is the better of
+        the two (it carries the position at the shutter), so once any has been
+        seen the TRIGGER messages are ignored, and a FEEDBACK repeating an image
+        index already handled is too.
+        """
+        if kind == "CAMERA_FEEDBACK":
+            self._seen_feedback = True
+            idx = getattr(msg, "img_idx", None)
+            if idx is not None and idx == self._last_img_idx:
+                return False
+            self._last_img_idx = idx
+            return True
+        return not self._seen_feedback
 
     def _trigger_geo(self, msg):
         """Position for a triggered capture.

@@ -1184,6 +1184,9 @@ def capture_and_analyse(
     geo=None,
     trigger="manual",
     rgb=None,
+    capture_id=None,
+    timestamp=None,
+    control_report=None,
     **cam_kwargs,
 ):
     """Run the full pipeline. Returns a metadata record.
@@ -1191,11 +1194,15 @@ def capture_and_analyse(
     `rgb` lets a caller supply an already-captured frame -- the debug view's
     "save this frame as a capture" does exactly that, so a saved debug frame
     flows through the identical analysis and rendering path as a real capture.
+
+    A flight grabs its frames in the air and analyses them after landing, so it
+    also hands over the `capture_id` and `timestamp` of the moment the shutter
+    fired, and the `control_report` the camera gave for that frame.
     """
-    capture_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    capture_id = capture_id or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     started = time.time()
     dng_name = None
-    control_report = {}
+    control_report = dict(control_report or {})
 
     if rgb is None:
         if capture_format == "raw_dng" and not dev_mode:
@@ -1254,7 +1261,8 @@ def capture_and_analyse(
 
     return {
         "id": capture_id,
-        "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        "timestamp": timestamp or datetime.datetime.now().isoformat(
+            timespec="seconds"),
         "label": label,
         "notes": notes,
         "files": files,

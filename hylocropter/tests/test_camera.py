@@ -193,3 +193,98 @@ def test_a_preview_that_never_lets_go_fails_the_capture_visibly(real, monkeypatc
         real._lock.release()
     assert not real._paused.is_set(), "the preview must be allowed to resume"
     assert real.capture_locked(lambda: "later") == (True, "later")
+
+
+# ── flight mode ──────────────────────────────────────────────────────────────
+
+class FakeStill:
+    """Enough of Picamera2 for the held still configuration."""
+
+    camera_controls = {}
+
+    def __init__(self):
+        self.started = self.closed = False
+        self.frames = 0
+
+    def create_still_configuration(self, **kw):
+        return kw
+
+    def configure(self, config):
+        self.config = config
+
+    def start(self):
+        self.started = True
+
+    def capture_request(self, wait=True):
+        return "job"
+
+    def wait(self, job, timeout=None):
+        self.frames += 1
+        cam = self
+
+        class Request:
+            def make_array(self, name):
+                import numpy as np
+                return np.full((48, 64, 3), 100 + cam.frames, np.uint8)
+
+            def get_metadata(self):
+                return {}
+
+            def release(self):
+                pass
+        return Request()
+
+    def stop(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def held(monkeypatch):
+    opened = []
+
+    def open_camera(neutralise_isp=True):
+        opened.append(FakeStill())
+        return opened[-1]
+
+    monkeypatch.setattr(camera_mod.bndvi, "open_camera", open_camera)
+    svc = camera_mod.CameraService(
+        {"preview_fps": 12, "resolution": [64, 48], "warmup_s": 0,
+         "gain": 2.0, "exposure_us": 5000, "colour_gains": [1.0, 1.0]},
+        dev_mode=False)
+    return svc, opened
+
+
+def test_a_flight_opens_the_camera_once_not_once_per_photo(held):
+    """The whole point: the warm-up is paid per flight, not per trigger."""
+    svc, opened = held
+    svc.begin_flight()
+    frames = [svc.grab_still()[0] for _ in range(5)]
+    assert len(opened) == 1
+    assert opened[0].config["main"]["size"] == (64, 48), "full still config"
+    assert len({int(f[0, 0, 0]) for f in frames}) == 5, "a fresh frame each time"
+    svc.end_flight()
+    assert opened[0].closed and not svc.flying
+
+
+def test_a_dropped_camera_is_reopened_mid_flight(held):
+    svc, opened = held
+    svc.begin_flight()
+    svc.grab_still()
+    svc.restart()                               # someone pressed Restart in Debug
+    svc.grab_still()
+    assert len(opened) == 2
+    svc.end_flight()
+
+
+def test_a_one_off_capture_is_refused_while_a_flight_holds_the_camera(held):
+    svc, opened = held
+    svc.begin_flight()
+    try:
+        with pytest.raises(RuntimeError, match="flight"):
+            svc.capture_locked(lambda: "photo")
+    finally:
+        svc.end_flight()
+    assert svc.capture_locked(lambda: "photo") == (True, "photo")

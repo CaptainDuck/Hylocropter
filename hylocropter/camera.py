@@ -58,6 +58,10 @@ CLOSE_WAIT_S = 1.5
 # anything past that is a preview that is not coming back.
 CAPTURE_WAIT_S = FRAME_WAIT_S + CLOSE_WAIT_S + 1.5
 
+# A full-resolution frame from a camera that is already running arrives in well
+# under a second; three means the sensor has stopped answering.
+STILL_WAIT_S = 3.0
+
 
 def _downsample(frame):
     """Nearest-neighbour shrink to PREVIEW_W x PREVIEW_H.
@@ -96,6 +100,8 @@ class CameraService:
         self._auto = False                      # diagnostic unlock, never persisted
         self._capture_flag = threading.Lock()
         self._capturing = False                 # a full capture, not a preview frame
+        self._mode = None                       # what _picam is configured for
+        self._flying = False                    # held in still mode for a flight
 
     # ── availability ──────────────────────────────────────────────────────
 
@@ -186,7 +192,7 @@ class CameraService:
     def _loop(self):
         while not self._stop.is_set():
             fps = max(1, min(24, int(self.settings.get("preview_fps", 12))))
-            if self._paused.is_set():
+            if self._paused.is_set() or self._flying:
                 time.sleep(0.1)
                 continue
             try:
@@ -248,8 +254,9 @@ class CameraService:
 
     def _open_locked(self):
         """Open picamera2 with the current locked controls. Caller holds _lock."""
-        if self._picam is not None:
+        if self._picam is not None and self._mode == "preview":
             return self._picam
+        self._close_locked()
         s = self.settings
         cam = bndvi.open_camera(
             neutralise_isp=bool(s.get("neutralise_isp", True)))
@@ -279,7 +286,7 @@ class CameraService:
                 pass
             raise
         time.sleep(0.4)
-        self._picam = cam
+        self._picam, self._mode = cam, "preview"
         log.info("preview camera opened")
         return cam
 
@@ -297,7 +304,7 @@ class CameraService:
         before. So the teardown runs on a throwaway thread and we wait only
         briefly for it.
         """
-        cam, self._picam = self._picam, None
+        cam, self._picam, self._mode = self._picam, None, None
         if cam is None:
             return
 
@@ -497,6 +504,9 @@ class CameraService:
         every other mission trigger with nothing said. A preview frame is over
         within FRAME_WAIT_S (plus the close if the sensor stalled), so wait for it.
         """
+        if self._flying:
+            raise RuntimeError("a flight is recording -- the mission takes the "
+                               "photos until the drone disarms")
         with self._capture_flag:
             if self._capturing:
                 return False, None
@@ -516,3 +526,112 @@ class CameraService:
             self._paused.clear()
             with self._capture_flag:
                 self._capturing = False
+
+    # ── flight mode ───────────────────────────────────────────────────────
+    # A capture on its own opens the camera, waits out the warm-up, takes one
+    # frame and closes it again: about four seconds. A mission asks for a photo
+    # every second or so, so in flight the camera is opened once, in the full-
+    # resolution still configuration, and held there until the drone disarms.
+    # Each trigger then costs one frame. The preview stands down meanwhile --
+    # nobody is watching the Debug view from the air, and it would have to fight
+    # the still configuration for the sensor.
+
+    def begin_flight(self):
+        """Switch to the held still configuration. Blocks for the warm-up."""
+        self._flying = True
+        with self._lock:
+            if not self.synthetic_requested():
+                self._open_still_locked()
+        log.info("camera held for flight (synthetic=%s)",
+                 self.synthetic_requested())
+
+    def end_flight(self):
+        """Let go of the still configuration and give the preview back."""
+        with self._lock:
+            if self._mode == "still":
+                self._close_locked()
+            self._flying = False
+        log.info("camera released after flight")
+
+    @property
+    def flying(self):
+        return self._flying
+
+    def grab_still(self, scene="mixed"):
+        """One full-resolution frame from the held camera: (rgb, control_report).
+
+        Reopens -- warm-up and all -- if something dropped the camera in the
+        meantime (a restart from Debug, a stalled frame), so one bad moment
+        costs a few photos rather than the rest of the flight.
+        """
+        if self.synthetic_requested():
+            self._jitter += 0.37
+            rgb = bndvi.synthetic_frame(
+                tuple(self.settings.get("resolution") or bndvi.DEFAULT_RESOLUTION),
+                scene=scene, jitter=self._jitter)
+            self._show(rgb, {"source": "synthetic", "mode": "flight"})
+            return rgb, {}
+        with self._lock:
+            cam = self._open_still_locked()
+            job = cam.capture_request(wait=False)
+            try:
+                request = cam.wait(job, timeout=STILL_WAIT_S)
+            except (_FutureTimeout, TimeoutError):
+                self._close_locked()
+                raise RuntimeError(
+                    f"camera delivered no frame in {STILL_WAIT_S:.0f}s -- "
+                    f"reopening. If this repeats, check the CSI ribbon.")
+            try:
+                frame = request.make_array("main")
+                metadata = request.get_metadata()
+            finally:
+                request.release()
+            report = {}
+            bndvi._fill_report(report, self._wanted, metadata, cam,
+                               bool(self.settings.get("neutralise_isp", True)))
+        self._show(frame, {"source": "camera", "mode": "flight",
+                           "mismatches": report.get("mismatches")})
+        return frame, report
+
+    def _show(self, rgb, meta):
+        """Let the Debug view show the last photo while the preview stands down."""
+        small = _downsample(rgb)
+        with self._frame_lock:
+            self._frame = tuple(small[:, :, i].astype(np.float32)
+                                for i in range(3))
+            self._frame_meta = meta
+            self._frame_seq += 1
+
+    def _open_still_locked(self):
+        """Open in the full-resolution still configuration. Caller holds _lock."""
+        if self._picam is not None and self._mode == "still":
+            return self._picam
+        self._close_locked()
+        s = self.settings
+        cam = bndvi.open_camera(
+            neutralise_isp=bool(s.get("neutralise_isp", True)))
+        wanted = bndvi.locked_controls(
+            s.get("gain"), s.get("exposure_us"), tuple(s.get("colour_gains")),
+            available=cam.camera_controls)
+        try:
+            # Same configuration a one-off capture uses, so a flight photo and a
+            # ground photo are the same measurement. queue=False so a trigger
+            # always gets a frame exposed after it arrived, never a stale one.
+            config = cam.create_still_configuration(
+                main={"size": tuple(s.get("resolution")
+                                    or bndvi.DEFAULT_RESOLUTION),
+                      "format": bndvi.CAPTURE_ARRAY_FORMAT},
+                controls=wanted, queue=False)
+            cam.configure(config)
+            cam.start()
+        except Exception:
+            try:
+                cam.close()
+            except Exception:
+                pass
+            raise
+        # The warm-up is paid once per flight here, not once per photo.
+        time.sleep(max(0.0, float(s.get("warmup_s", bndvi.DEFAULT_WARMUP_S))))
+        self._picam, self._mode, self._wanted = cam, "still", wanted
+        log.info("still camera opened and held")
+        return cam

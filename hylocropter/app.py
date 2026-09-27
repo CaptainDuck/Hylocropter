@@ -37,6 +37,7 @@ import applog
 import bndvi
 import camera as camera_mod
 import flights as flights_mod
+import recorder as recorder_mod
 import settings as settings_mod
 import system as system_mod
 import telemetry as telemetry_mod
@@ -76,21 +77,28 @@ def _recording_flight():
 
 
 def _on_camera_trigger(geo):
-    """Fired for every CAMERA_TRIGGER / CAMERA_FEEDBACK from the flight
-    controller. Photo triggering belongs in the mission, not here — the Pi just
-    obeys, and every photo carries the controller's own position."""
+    """Fired for every camera trigger from the flight controller. Photo
+    triggering belongs in the mission, not here — the Pi just obeys, and every
+    photo carries the controller's own position.
+
+    This runs on the MAVLink reader thread, so it only queues the photo: the
+    recorder grabs it and the analysis waits until the drone has landed.
+    """
     flight = _recording_flight()
     if flight is None:
         log.debug("camera trigger with no flight recording — ignored")
         return
-    ok, record = _do_capture(flight_id=flight["id"], geo=geo,
-                             trigger=config.get("trigger_mode", "distance"))
-    if ok:
-        store.attach_capture(flight["id"], record["id"])
-    else:
-        # A missed photo leaves a hole in the map, so say so where the operator
-        # will look -- this used to vanish without a trace.
-        log.warning("Missed a mission photo: %s", record,
+    if recorder.flight_id != flight["id"]:
+        # The app restarted mid-flight: pick the recording back up.
+        _start_recorder(flight["id"])
+    recorder.trigger(geo, trigger=config.get("trigger_mode", "distance"))
+
+
+def _start_recorder(flight_id):
+    try:
+        recorder.start(flight_id)
+    except RuntimeError as exc:
+        log.warning("Could not start recording %s: %s", flight_id, exc,
                     extra={"activity": True})
 
 
@@ -113,6 +121,7 @@ def _on_arm_change(armed, snapshot):
                 thresholds=config.thresholds())
             applog.activity(log, "Mission started — recording as %s",
                             flight["id"])
+        _start_recorder(_recording_flight()["id"])
     else:
         flight = _recording_flight()
         if flight is not None:
@@ -120,6 +129,7 @@ def _on_arm_change(armed, snapshot):
             _start_processing(flight["id"])
 
 
+recorder = recorder_mod.FlightRecorder(cam, store, config)
 tel = telemetry_mod.TelemetryService(config, on_trigger=_on_camera_trigger,
                                     on_arm_change=_on_arm_change)
 device = system_mod.SystemService(store, cam, tel, config, REPO_ROOT)
@@ -529,6 +539,7 @@ def api_flight_create():
                  "altitude_m": mission.get("altitude_m"),
                  "line_spacing_m": mission.get("line_spacing_m")},
         thresholds=config.thresholds())
+    _start_recorder(flight["id"])
     applog.activity(log, "Camera armed for %s — waiting for the mission",
                     flight["id"])
     return jsonify(flight), 201
@@ -568,6 +579,12 @@ def api_flight_delete(flight_id):
 def api_flight_cancel(flight_id):
     if store.flight(flight_id) is None:
         return _json_error("not found", 404)
+    if recorder.flight_id == flight_id:
+        recorder.stop()
+    if recorder_mod.pending_frames(store, flight_id):
+        # Photos were taken. Cancelling must not throw them away unseen.
+        _start_processing(flight_id)
+        return jsonify({"cancelled": True, "deleted": False})
     if not store.captures(flight_id=flight_id):
         store.delete_flight(flight_id)
         return jsonify({"cancelled": True, "deleted": True})
@@ -589,27 +606,33 @@ def api_processing():
 
 
 def _start_processing(flight_id):
-    """Close and summarise a flight, reporting progress for the UI.
+    """Analyse a landed flight's photos and close it, reporting progress.
 
-    Captures are already analysed as they are taken — a Pi 4 cannot run 8 MP
-    BNDVI plus figure rendering per frame at a 5 s cadence *and* service
-    MAVLink, so the per-photo work happens at capture time and this stage does
-    the aggregation, the map grid, and the save. (The thesis contradicts itself
-    on in-flight vs post-flight; see RESEARCH-GAPS.md section 10.)
+    In the air the recorder only grabs and saves raw frames — a Pi 4 cannot run
+    8 MP BNDVI plus figure rendering once a second *and* keep up with the
+    mission. The per-photo analysis happens here, after the drone disarms, which
+    is also what the thesis describes (RESEARCH-GAPS.md section 10).
     """
     if _processing["running"]:
         return _processing
+    _processing.update(flight_id=flight_id, running=True, total=0, done=0,
+                       percent=2.0, stage=0,
+                       message="Copying photos off the camera")
 
     def work():
-        captures = store.captures(flight_id=flight_id, newest_first=False)
-        total = max(1, len(captures))
-        _processing.update(flight_id=flight_id, running=True,
-                           total=len(captures), done=0, percent=6.0, stage=0,
-                           message="Copying photos off the camera")
-        for i, _ in enumerate(captures, 1):
-            _processing.update(done=i, stage=1,
-                               percent=round(22 + 40 * i / total, 1),
+        if recorder.flight_id == flight_id:
+            recorder.stop()               # finish the photos already asked for
+        missed = recorder.stats.get("missed", 0) \
+            if recorder.stats.get("flight_id") == flight_id else 0
+        total = len(recorder_mod.pending_frames(store, flight_id))
+        _processing.update(total=total, percent=6.0)
+
+        def progress(done, of):
+            _processing.update(done=done, stage=1,
+                               percent=round(10 + 60 * done / max(1, of), 1),
                                message="Working out plant stress for each photo")
+
+        ok, failed = recorder_mod.analyse_pending(store, flight_id, progress)
         _processing.update(stage=2, percent=75.0,
                            message="Placing them on the farm map")
         flight = store.close_flight(flight_id, config.thresholds())
@@ -618,6 +641,10 @@ def _start_processing(flight_id):
         if flight:
             applog.activity(log, "Flight %s saved — %d photos processed",
                             flight_id, flight.get("capture_count", 0))
+        if missed or failed:
+            log.warning("Flight %s: %d photos missed in the air, %d could not "
+                        "be analysed", flight_id, missed, failed,
+                        extra={"activity": True})
 
     threading.Thread(target=work, name="processing", daemon=True).start()
     return _processing
@@ -630,6 +657,7 @@ def api_telemetry():
     snap = tel.snapshot()
     snap["recording_flight"] = (_recording_flight() or {}).get("id")
     snap["camera"] = cam.probe()
+    snap["recorder"] = dict(recorder.stats)
     return jsonify(snap)
 
 

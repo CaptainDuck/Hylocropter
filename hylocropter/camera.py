@@ -53,6 +53,11 @@ FRAME_WAIT_S = 2.0
 # this is one that has stopped answering at all.
 CLOSE_WAIT_S = 1.5
 
+# How long a capture waits for the preview to finish the frame it is on. The worst
+# honest case is a frame that times out and then a close that times out too;
+# anything past that is a preview that is not coming back.
+CAPTURE_WAIT_S = FRAME_WAIT_S + CLOSE_WAIT_S + 1.5
+
 
 def _downsample(frame):
     """Nearest-neighbour shrink to PREVIEW_W x PREVIEW_H.
@@ -89,6 +94,8 @@ class CameraService:
         self._synthetic_override = dev_mode
         self._last_error = None
         self._auto = False                      # diagnostic unlock, never persisted
+        self._capture_flag = threading.Lock()
+        self._capturing = False                 # a full capture, not a preview frame
 
     # ── availability ──────────────────────────────────────────────────────
 
@@ -100,6 +107,14 @@ class CameraService:
         """
         now = time.time()
         if self._probe is not None and not force and now - self._probe_at < 5.0:
+            return self._probe
+        # Never enumerate while something holds the camera. The header polls this
+        # from a request thread, and asking libcamera's camera manager for its
+        # list in the middle of a capture opening or closing the device is a race
+        # -- one that used to come back "no camera", which then turned every
+        # capture for the next few seconds synthetic. Whoever holds the lock is
+        # using the camera, so the last answer is still the right one.
+        if self._probe is not None and self._lock.locked():
             return self._probe
         if self.dev_mode:
             info = {"available": False, "backend": "synthetic",
@@ -113,10 +128,26 @@ class CameraService:
         return info
 
     def using_synthetic(self):
-        """True when frames are generated rather than captured."""
-        if self.dev_mode or self._synthetic_override:
+        """True when the *preview* shows generated frames rather than captured.
+
+        Falling back when the camera is missing is right for the live feed -- the
+        Debug view stays usable and says why. It is never right for a capture:
+        see synthetic_requested().
+        """
+        if self.synthetic_requested():
             return True
         return not self.probe().get("available", False)
+
+    def synthetic_requested(self):
+        """True only when someone asked for synthetic frames: dev mode, or the
+        Debug view's button.
+
+        This is what a capture must go by. A capture that silently swapped in a
+        generated frame because a probe hiccuped is fake data filed as a real
+        photo, placed on the map at a real GPS position -- exactly the thing a
+        farmer would act on. Without a camera a capture has to fail, loudly.
+        """
+        return bool(self.dev_mode or self._synthetic_override)
 
     def use_synthetic(self, on=True):
         """The Debug view's 'Use synthetic frames' button."""
@@ -460,15 +491,28 @@ class CameraService:
     def capture_locked(self, fn):
         """Run `fn` with exclusive camera access, preview paused.
 
-        Non-blocking: returns (False, None) immediately if the camera is busy,
-        which the API surfaces as 409 — preserving the old behaviour.
+        Returns (False, None) at once if another *capture* is running, which the
+        API surfaces as 409. The preview is different: it holds the lock for most
+        of every frame, so refusing whenever the lock was taken dropped roughly
+        every other mission trigger with nothing said. A preview frame is over
+        within FRAME_WAIT_S (plus the close if the sensor stalled), so wait for it.
         """
-        if not self._lock.acquire(blocking=False):
-            return False, None
-        self._paused.set()
+        with self._capture_flag:
+            if self._capturing:
+                return False, None
+            self._capturing = True
         try:
-            self._close_locked()      # release the device for the still config
-            return True, fn()
+            self._paused.set()        # stop the preview queueing another frame
+            if not self._lock.acquire(timeout=CAPTURE_WAIT_S):
+                raise RuntimeError(
+                    f"the camera stayed busy for {CAPTURE_WAIT_S:.0f}s -- the "
+                    f"live preview may be stuck. Restart the camera from Debug.")
+            try:
+                self._close_locked()  # release the device for the still config
+                return True, fn()
+            finally:
+                self._lock.release()
         finally:
             self._paused.clear()
-            self._lock.release()
+            with self._capture_flag:
+                self._capturing = False

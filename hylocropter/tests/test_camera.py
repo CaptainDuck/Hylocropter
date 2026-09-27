@@ -113,3 +113,83 @@ def test_closing_when_there_is_no_camera_is_harmless(service):
     service._picam = None
     service._close_locked()
     assert service._picam is None
+
+
+# ── captures and the preview ─────────────────────────────────────────────────
+# From the first real mission: one real photo, then every other capture in the
+# flight was a synthetic frame filed as a real photo at a real GPS position.
+
+@pytest.fixture
+def real():
+    """A service that is *not* in dev mode, as on the Pi."""
+    return camera_mod.CameraService({"preview_fps": 12}, dev_mode=False)
+
+
+def test_a_capture_never_goes_synthetic_just_because_the_camera_looked_missing(
+        real, monkeypatch):
+    """The preview may fall back to generated frames; a capture may not. Without
+    a camera it has to fail, not quietly invent a plot."""
+    monkeypatch.setattr(camera_mod.bndvi, "probe_camera",
+                        lambda: {"available": False, "detail": "enumeration hiccup"})
+    assert real.using_synthetic(), "the preview still falls back, and says so"
+    assert not real.synthetic_requested()
+
+
+def test_synthetic_captures_still_happen_when_asked_for(real, service):
+    assert service.synthetic_requested()                 # dev mode
+    real.use_synthetic(True)                             # the Debug button
+    assert real.synthetic_requested()
+
+
+def test_the_probe_does_not_enumerate_while_the_camera_is_in_use(real, monkeypatch):
+    """Enumerating mid-capture raced libcamera and came back 'no camera'."""
+    calls = []
+    monkeypatch.setattr(camera_mod.bndvi, "probe_camera",
+                        lambda: calls.append(1) or {"available": True})
+    real.probe(force=True)
+    assert len(calls) == 1
+
+    with real._lock:
+        info = real.probe(force=True)
+    assert len(calls) == 1, "it enumerated while a capture held the camera"
+    assert info["available"]
+
+
+def test_a_capture_waits_out_a_preview_frame_instead_of_being_dropped(real):
+    """The preview holds the lock for most of every frame, so refusing whenever
+    it was taken lost about every other mission trigger."""
+    real._lock.acquire()                                 # a preview frame in flight
+    threading.Timer(0.3, real._lock.release).start()
+
+    acquired, result = real.capture_locked(lambda: "photo")
+    assert acquired and result == "photo"
+
+
+def test_a_second_capture_is_still_refused_rather_than_queued(real):
+    started, release = threading.Event(), threading.Event()
+
+    def slow():
+        started.set()
+        release.wait(5)
+        return "first"
+
+    first = threading.Thread(target=real.capture_locked, args=(slow,))
+    first.start()
+    assert started.wait(2)
+    try:
+        assert real.capture_locked(lambda: "second") == (False, None)
+    finally:
+        release.set()
+        first.join(5)
+
+
+def test_a_preview_that_never_lets_go_fails_the_capture_visibly(real, monkeypatch):
+    monkeypatch.setattr(camera_mod, "CAPTURE_WAIT_S", 0.2)
+    real._lock.acquire()
+    try:
+        with pytest.raises(RuntimeError, match="busy"):
+            real.capture_locked(lambda: "never")
+    finally:
+        real._lock.release()
+    assert not real._paused.is_set(), "the preview must be allowed to resume"
+    assert real.capture_locked(lambda: "later") == (True, "later")

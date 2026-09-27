@@ -450,3 +450,32 @@ def test_colour_gains_are_clamped_before_reaching_the_camera(client):
     client.patch("/api/settings", json={"colour_gains": [0, 99]})
     gains = client.get("/api/settings").get_json()["colour_gains"]
     assert gains == [0.1, 8.0]
+
+
+def test_without_a_camera_a_real_capture_fails_instead_of_faking_one(
+        client, monkeypatch):
+    """Out of dev mode with no camera, the answer is an error -- not a generated
+    frame filed as a photo. That is what the first real mission produced."""
+    real_capture = bndvi.capture_image
+
+    def no_camera(dev_mode=False, **kwargs):
+        # Stubbed so this cannot take a real photo when the suite runs on the Pi.
+        if dev_mode:
+            return real_capture(dev_mode=True, **kwargs)
+        raise bndvi.CameraUnavailable("no camera detected on the CSI port")
+
+    monkeypatch.setattr(bndvi, "capture_image", no_camera)
+    monkeypatch.setattr(bndvi, "probe_camera",
+                        lambda: {"available": False, "detail": "no camera"})
+    app_mod.cam._probe = None
+    app_mod.app.config["DEV_MODE"] = False
+    app_mod.cam.dev_mode = False
+    app_mod.cam._synthetic_override = False
+    before = len(app_mod.store.captures())
+    try:
+        res = client.post("/api/captures", json={"label": "no camera"})
+    finally:
+        app_mod.app.config["DEV_MODE"] = True
+        app_mod.cam.dev_mode = True
+    assert res.status_code >= 400, res.data[:300]
+    assert len(app_mod.store.captures()) == before

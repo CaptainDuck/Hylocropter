@@ -87,6 +87,11 @@ def _on_camera_trigger(geo):
                              trigger=config.get("trigger_mode", "distance"))
     if ok:
         store.attach_capture(flight["id"], record["id"])
+    else:
+        # A missed photo leaves a hole in the map, so say so where the operator
+        # will look -- this used to vanish without a trace.
+        log.warning("Missed a mission photo: %s", record,
+                    extra={"activity": True})
 
 
 def _on_arm_change(armed, snapshot):
@@ -454,7 +459,9 @@ def _do_capture(label=None, notes=None, flight_id=None, geo=None,
             rgb, _meta = cam.latest_rgb()
         return bndvi.capture_and_analyse(
             out_dir, label=label, notes=notes,
-            dev_mode=app.config["DEV_MODE"] or cam.using_synthetic(),
+            # Only when asked for. Never because the camera looked missing --
+            # that silently filed generated frames as real mission photos.
+            dev_mode=app.config["DEV_MODE"] or cam.synthetic_requested(),
             flight_id=flight_id, geo=geo, trigger=trigger, rgb=rgb,
             **analysis, **config.camera_kwargs())
 

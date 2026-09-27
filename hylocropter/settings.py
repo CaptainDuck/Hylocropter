@@ -157,7 +157,10 @@ _LIMITS = {
     "preview_fps": (1, 24),
     "plot_lat": (-90.0, 90.0),
     "plot_lon": (-180.0, 180.0),
-    "plot_box_m": (100, 4000),
+    # 10 km: a 5 km radius around where you are, for finding the farm. At full
+    # zoom that is ~25,000 tiles, which tiles.MAX_TILES refuses -- a box this big
+    # is meant to be downloaded at zoom 16-17, with a small full-detail core.
+    "plot_box_m": (100, 10_000),
     "trigger_distance_m": (1, 200),
     "trigger_interval_s": (1, 120),
     "mavlink_baud": (1200, 921_600),

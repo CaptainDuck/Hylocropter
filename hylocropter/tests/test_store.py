@@ -504,7 +504,7 @@ def test_an_impossible_location_is_rejected_not_stored(config):
 def test_a_location_size_is_clamped_like_the_vicinity(config):
     applied, _ = config.update({"sites": [
         {"id": "huge", "name": "Huge", "lat": 0, "lon": 0, "box_m": 99999}]})
-    assert applied["sites"][0]["box_m"] == 4000
+    assert applied["sites"][0]["box_m"] == 10_000
 
 
 def test_duplicate_location_ids_are_made_unique(config):

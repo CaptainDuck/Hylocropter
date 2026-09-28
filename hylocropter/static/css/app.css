@@ -212,6 +212,14 @@
   color: color-mix(in srgb, var(--color-text) 70%, transparent);
 }
 .map-live-status.is-bad { color: var(--stress-stressed); }
+.map-live-status a { color: inherit; text-decoration: underline; }
+.live-swatch {
+  display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  margin-right: 5px; border: 1.5px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25);
+  vertical-align: -1px;
+}
+.live-swatch.is-drone { background: #1f6feb; }
+.live-swatch.is-me { background: #16a34a; }
 
 /* the survey blocks: "which parts of this neighbourhood do I actually fly?" */
 .map-block { display: flex; flex-direction: column; gap: 7px; }

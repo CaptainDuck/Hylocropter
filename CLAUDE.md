@@ -51,7 +51,7 @@ python hylocropter/app.py --debug                    # Flask reloader on
 
 ```bash
 pip install -r hylocropter/requirements-dev.txt
-pytest                            # 312 tests, from the repo root or anywhere
+pytest                            # 316 tests, from the repo root or anywhere
 pytest hylocropter/tests/test_index.py -v
 ```
 
@@ -156,6 +156,10 @@ the memory on a Pi 4.
 - **`system.py`** — device actions. Destructive ones return a confirmation
   contract instead of acting; the route requires an explicit `confirm: true`.
 - **`tiles.py`** — offline basemap prefetch, coverage reporting, fallback tile.
+- **`tls.py`** — a second, **https** copy of the dashboard (port 5443, self-signed
+  cert made by `openssl` on first run in `hylocropter_data/tls/`). Exists only
+  because browsers refuse to share the device's location with plain http, which
+  the map's "This device" dot needs. The http address is unchanged.
 - **`applog.py`** — logging to a rotating file plus an in-memory ring the UI reads.
 - **`app.py`** — routes only. Keep it thin.
 

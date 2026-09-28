@@ -233,7 +233,7 @@ pip install -r hylocropter/requirements-dev.txt
 pytest
 ```
 
-312 tests covering the index maths, the photo→footprint→grid mapping chain, the
+316 tests covering the index maths, the photo→footprint→grid mapping chain, the
 survey blocks, the JSON store, the settings, and every route rendering with no
 camera and no drone.
 `.github/workflows/verify.yml` runs the same suite on every push, in one job,

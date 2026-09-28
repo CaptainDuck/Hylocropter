@@ -962,101 +962,193 @@
   }
 
   /* ── live location ──────────────────────────────────────────────────────
-     The drone's own GPS, so you can see where on the imagery you are standing
-     before you fly, or where the drone is while it flies. Polled only while the
-     box is ticked; the choice is remembered on this device. Every way it can be
-     missing -- no link, no fix -- says so in words rather than just showing no
-     dot. */
-  const liveBox = document.getElementById('map-live');
-  const liveStatus = document.getElementById('map-live-status');
+     Two dots, because they answer different questions. The drone's own GPS
+     (blue) comes over MAVLink and works on any address. This device's location
+     (green) comes from the browser, which only shares it with an https page --
+     so on the plain http address it says so and links to the https copy the Pi
+     also serves (tls.py). Each is polled or watched only while its box is
+     ticked, the choices are remembered on this device, and every way either can
+     be missing says so in words rather than just showing no dot. */
+  const liveBlock = document.getElementById('map-live-block');
   const liveCentre = document.getElementById('map-live-centre');
-  const LIVE_KEY = 'hc.map.live';
-  let livePoll = null, liveDot = null, liveRing = null, liveAt = null;
-  let liveCentred = false;
 
-  function liveSay(text, bad) {
-    liveStatus.hidden = false;
-    liveStatus.textContent = text;
-    liveStatus.classList.toggle('is-bad', !!bad);
+  /** One dot on the map with its accuracy ring and a status line. */
+  function liveMarker(colour, label, statusEl) {
+    let dot = null, ring = null;
+    const self = {
+      at: null,
+      say: function (text, bad, html) {
+        statusEl.hidden = false;
+        if (html) statusEl.innerHTML = text; else statusEl.textContent = text;
+        statusEl.classList.toggle('is-bad', !!bad);
+      },
+      quiet: function () { statusEl.hidden = true; },
+      clear: function () {
+        if (dot) { map.removeLayer(dot); dot = null; }
+        if (ring) { map.removeLayer(ring); ring = null; }
+        self.at = null;
+        syncCentre();
+      },
+      place: function (lat, lon, radius) {
+        const at = [lat, lon];
+        if (!dot) {
+          ring = L.circle(at, {
+            radius: radius, color: colour, weight: 1, fillColor: colour,
+            fillOpacity: 0.12, interactive: false
+          }).addTo(map);
+          dot = L.circleMarker(at, {
+            radius: 7, color: '#ffffff', weight: 2.5, fillColor: colour,
+            fillOpacity: 1
+          }).addTo(map).bindTooltip(label);
+          // The first fix is the moment someone wants to see where they are.
+          map.setView(at, Math.max(map.getZoom(), 18));
+        } else {
+          dot.setLatLng(at);
+          ring.setLatLng(at).setRadius(radius);
+        }
+        self.at = at;
+        syncCentre();
+      }
+    };
+    return self;
   }
 
-  function liveClear() {
-    if (liveDot) { map.removeLayer(liveDot); liveDot = null; }
-    if (liveRing) { map.removeLayer(liveRing); liveRing = null; }
-    liveCentre.hidden = true;
+  let drone = null, me = null;
+
+  function syncCentre() {
+    if (liveCentre) liveCentre.hidden = !((me && me.at) || (drone && drone.at));
   }
 
-  function liveTick() {
-    return HC.api('/api/telemetry').then(function (snap) {
-      if (!snap.connected) {
-        liveClear();
-        liveSay('Not connected to the drone — ' + (snap.detail || 'no link') + '.', true);
-        return;
-      }
-      const pos = snap.position;
-      const gps = snap.gps || {};
-      if (!pos || gps.fix_type < 2) {
-        liveClear();
-        liveSay('Connected, but no GPS fix yet (' + (gps.satellites || 0) +
-                ' satellites). Give it a minute in the open.', true);
-        return;
-      }
-      const at = [pos.lat, pos.lon];
-      // HDOP times the receiver's rough base error is the usual back-of-envelope
-      // accuracy. It is an estimate, so the ring is labelled "about".
-      const radius = Math.max(1.5, (gps.hdop || 1) * 2.5);
-      if (!liveDot) {
-        liveRing = L.circle(at, {
-          radius: radius, color: '#1f6feb', weight: 1, fillColor: '#1f6feb',
-          fillOpacity: 0.12, interactive: false
-        }).addTo(map);
-        liveDot = L.circleMarker(at, {
-          radius: 7, color: '#ffffff', weight: 2.5, fillColor: '#1f6feb',
-          fillOpacity: 1
-        }).addTo(map).bindTooltip('Drone');
-      } else {
-        liveDot.setLatLng(at);
-        liveRing.setLatLng(at).setRadius(radius);
-      }
-      liveAt = at;
-      liveCentre.hidden = false;
-      if (!liveCentred) {
-        liveCentred = true;
-        map.setView(at, Math.max(map.getZoom(), 18));
-      }
-      liveSay(pos.lat.toFixed(6) + ', ' + pos.lon.toFixed(6) + ' · ' +
-              gps.fix_label + ', ' + gps.satellites + ' satellites · about ±' +
-              radius.toFixed(0) + ' m' +
-              (snap.armed && pos.rel_alt_m != null
-                ? ' · ' + pos.rel_alt_m.toFixed(1) + ' m up' : ''));
-    }).catch(function () {
-      liveSay('Could not reach the Pi.', true);
-      throw new Error('telemetry');     // let the poller back off
-    });
+  function remembered(key) {
+    try { return localStorage.getItem(key) === '1'; } catch (e) { return false; }
+  }
+  function remember(key, on) {
+    try { localStorage.setItem(key, on ? '1' : '0'); } catch (e) {}
   }
 
-  function liveSet(on) {
-    try { localStorage.setItem(LIVE_KEY, on ? '1' : '0'); } catch (e) {}
-    if (on && !livePoll) {
-      liveCentred = false;
-      liveSay('Looking for the drone…');
-      livePoll = HC.poll(liveTick, 2000);
-    } else if (!on && livePoll) {
-      livePoll.stop();
-      livePoll = null;
-      liveClear();
-      liveStatus.hidden = true;
+  /* the drone */
+  const droneBox = document.getElementById('map-live');
+  if (droneBox) {
+    drone = liveMarker('#1f6feb', 'Drone', document.getElementById('map-live-status'));
+    let poll = null;
+
+    function tick() {
+      return HC.api('/api/telemetry').then(function (snap) {
+        if (!snap.connected) {
+          drone.clear();
+          drone.say('Not connected to the drone — ' + (snap.detail || 'no link') + '.', true);
+          return;
+        }
+        const pos = snap.position;
+        const gps = snap.gps || {};
+        if (!pos || gps.fix_type < 2) {
+          drone.clear();
+          drone.say('Connected, but no GPS fix yet (' + (gps.satellites || 0) +
+                    ' satellites). Give it a minute in the open.', true);
+          return;
+        }
+        // HDOP times the receiver's rough base error is the usual back-of-
+        // envelope accuracy. It is an estimate, so it is labelled "about".
+        const radius = Math.max(1.5, (gps.hdop || 1) * 2.5);
+        drone.place(pos.lat, pos.lon, radius);
+        drone.say(pos.lat.toFixed(6) + ', ' + pos.lon.toFixed(6) + ' · ' +
+                  gps.fix_label + ', ' + gps.satellites + ' satellites · about ±' +
+                  radius.toFixed(0) + ' m' +
+                  (snap.armed && pos.rel_alt_m != null
+                    ? ' · ' + pos.rel_alt_m.toFixed(1) + ' m up' : ''));
+      }).catch(function () {
+        drone.say('Could not reach the Pi.', true);
+        throw new Error('telemetry');     // let the poller back off
+      });
     }
+
+    function set(on) {
+      remember('hc.map.live', on);
+      if (on && !poll) {
+        drone.say('Looking for the drone…');
+        poll = HC.poll(tick, 2000);
+      } else if (!on && poll) {
+        poll.stop(); poll = null;
+        drone.clear(); drone.quiet();
+      }
+    }
+    droneBox.addEventListener('change', function () { set(droneBox.checked); });
+    if (remembered('hc.map.live')) { droneBox.checked = true; set(true); }
   }
 
-  if (liveBox) {
-    liveBox.addEventListener('change', function () { liveSet(liveBox.checked); });
+  /* this device */
+  const meBox = document.getElementById('map-me');
+  if (meBox) {
+    me = liveMarker('#16a34a', 'You', document.getElementById('map-me-status'));
+    let watch = null;
+    const httpsPort = liveBlock && liveBlock.dataset.httpsPort;
+
+    function secureLink() {
+      if (!httpsPort) {
+        const why = liveBlock && liveBlock.dataset.httpsError;
+        return ' The Pi’s secure address is not running' + (why ? ' (' + esc(why) + ')' : '') +
+               ', so use the drone’s GPS instead.';
+      }
+      const url = 'https://' + location.hostname + ':' + httpsPort +
+                  location.pathname + location.search;
+      return ' <a href="' + esc(url) + '">Open the secure address</a> — the ' +
+             'first time, the browser warns that the connection is not private; ' +
+             'choose Advanced → Proceed. That is expected: the Pi made its own ' +
+             'certificate, because there is no internet out here to get one.';
+    }
+
+    function start() {
+      if (!window.isSecureContext) {
+        me.say('This browser only shares its location with secure pages, and ' +
+               'this is the plain address.' + secureLink(), true, true);
+        return;
+      }
+      if (!navigator.geolocation) {
+        me.say('This browser cannot report a location.', true);
+        return;
+      }
+      me.say('Asking this device where it is… allow location if it asks.');
+      watch = navigator.geolocation.watchPosition(function (pos) {
+        const c = pos.coords;
+        const radius = Math.max(1, c.accuracy || 10);
+        me.place(c.latitude, c.longitude, radius);
+        me.say(c.latitude.toFixed(6) + ', ' + c.longitude.toFixed(6) +
+               ' · about ±' + radius.toFixed(0) + ' m');
+      }, function (err) {
+        me.clear();
+        if (err.code === err.PERMISSION_DENIED) {
+          me.say('Location permission was refused. Allow it for this site in ' +
+                 'the browser’s settings (the icon beside the address), then ' +
+                 'tick the box again.', true);
+          stop(false);
+        } else if (err.code === err.POSITION_UNAVAILABLE) {
+          me.say('No location available. Phones use GPS and work offline; ' +
+                 'laptops usually locate themselves by Wi-Fi, which needs ' +
+                 'internet.', true);
+        } else {
+          me.say('Still waiting for a location — step into the open.', true);
+        }
+      }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
+    }
+
+    function stop(clearBox) {
+      if (watch !== null) { navigator.geolocation.clearWatch(watch); watch = null; }
+      if (clearBox) { me.clear(); me.quiet(); }
+    }
+
+    function set(on) {
+      remember('hc.map.me', on);
+      if (on) start(); else stop(true);
+    }
+    meBox.addEventListener('change', function () { set(meBox.checked); });
+    if (remembered('hc.map.me')) { meBox.checked = true; set(true); }
+  }
+
+  if (liveCentre) {
     liveCentre.addEventListener('click', function () {
-      if (liveAt) map.setView(liveAt, Math.max(map.getZoom(), 18));
+      const at = (me && me.at) || (drone && drone.at);
+      if (at) map.setView(at, Math.max(map.getZoom(), 18));
     });
-    let wasOn = false;
-    try { wasOn = localStorage.getItem(LIVE_KEY) === '1'; } catch (e) {}
-    if (wasOn) { liveBox.checked = true; liveSet(true); }
   }
 
   /* ── go ─────────────────────────────────────────────────────────────────── */

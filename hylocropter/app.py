@@ -42,6 +42,7 @@ import settings as settings_mod
 import system as system_mod
 import telemetry as telemetry_mod
 import tiles as tiles_mod
+import tls as tls_mod
 
 BASE_DIR = Path(__file__).parent.resolve()
 REPO_ROOT = BASE_DIR.parent
@@ -193,6 +194,7 @@ def _shell():
     return {
         "camera": probe,
         "telemetry": snap,
+        "https": tls_mod.status(),
         "cfg": config.as_dict(),
         "coverage": cov,
         "banner": banner,
@@ -1132,6 +1134,9 @@ def parse_args():
     p.add_argument("--dev", action="store_true",
                    help="use synthetic frames instead of the camera")
     p.add_argument("--debug", action="store_true", help="Flask reloader")
+    p.add_argument("--https-port", type=int, default=tls_mod.DEFAULT_PORT,
+                   help="also serve https here, so a phone will share its "
+                        "location with the map (0 turns it off)")
     return p.parse_args()
 
 
@@ -1168,4 +1173,7 @@ if __name__ == "__main__":
         log.info("DEV MODE — synthetic frames, no camera")
     log.info("data dir: %s", DATA_DIR)
     log.info("open http://%s:%s/", args.host, args.port)
+    # Not under the reloader: it would start a second copy on the same port.
+    if not args.debug:
+        tls_mod.start(app, args.host, args.https_port, DATA_DIR / "tls")
     app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)

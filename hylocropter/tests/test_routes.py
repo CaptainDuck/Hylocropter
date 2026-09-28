@@ -527,5 +527,8 @@ def test_the_plan_allows_for_the_plants_by_default(client):
 
 
 def test_the_map_offers_live_location(client):
+    """The drone's GPS, and the device's own -- which needs the https copy, so
+    the page is told whether that is running."""
     page = client.get("/").get_data(as_text=True)
-    assert 'id="map-live"' in page
+    assert 'id="map-live"' in page and 'id="map-me"' in page
+    assert "data-https-port" in page

@@ -73,16 +73,23 @@
         </label>
       {% endif %}
 
-      {# Where the drone is now, off its own GPS. Not the phone's: a browser
-         only hands out its location to https pages, and the Pi serves plain
-         http on its own hotspot, so the drone -- which is standing next to you
-         before take-off -- is the location there is. #}
-      <div class="map-block" style="padding-bottom:8px">
+      {# Where things are right now. The drone's GPS works on any address. The
+         device's own location only works on the https copy (tls.py): browsers
+         refuse to share it with plain http pages. #}
+      <div class="map-block" style="padding-bottom:8px" id="map-live-block"
+           data-https-port="{{ https.port if https.running else '' }}"
+           data-https-error="{{ https.error or '' }}">
+        <div class="map-block-head"><span>Live location</span></div>
         <label class="map-toggle">
           <input type="checkbox" id="map-live">
-          <span>Live location (drone GPS)</span>
+          <span><span class="live-swatch is-drone"></span>Drone (its GPS)</span>
         </label>
         <div class="map-live-status" id="map-live-status" hidden></div>
+        <label class="map-toggle">
+          <input type="checkbox" id="map-me">
+          <span><span class="live-swatch is-me"></span>This device</span>
+        </label>
+        <div class="map-live-status" id="map-me-status" hidden></div>
         <button class="btn btn-ghost btn-sm" id="map-live-centre" hidden>Centre on it</button>
       </div>
 

@@ -91,7 +91,16 @@ def _on_camera_trigger(geo):
     if recorder.flight_id != flight["id"]:
         # The app restarted mid-flight: pick the recording back up.
         _start_recorder(flight["id"])
-    recorder.trigger(geo, trigger=config.get("trigger_mode", "distance"))
+    recorder.trigger(_with_canopy(geo),
+                     trigger=config.get("trigger_mode", "distance"))
+
+
+def _with_canopy(geo):
+    """Stamp a position with the crop height in force when the photo was taken,
+    so changing the setting later cannot resize the footprints of old flights."""
+    if not geo:
+        return geo
+    return {**geo, "canopy_m": config.get("canopy_height_m")}
 
 
 def _start_recorder(flight_id):
@@ -237,7 +246,8 @@ def page_map():
         if geo.get("lat") is None:
             continue
         fp = flights_mod.footprint(geo, config.get("fov_h_deg"),
-                                  config.get("fov_v_deg"))
+                                  config.get("fov_v_deg"),
+                                  canopy_m=config.get("canopy_height_m"))
         pins.append({
             "id": c["id"],
             "lat": geo["lat"], "lon": geo["lon"],
@@ -251,7 +261,8 @@ def page_map():
             "footprint": fp,
             "gsd_cm": flights_mod.ground_sampling_distance_cm(
                 geo, (c.get("settings") or {}).get("resolution"),
-                config.get("fov_h_deg")),
+                config.get("fov_h_deg"),
+                canopy_m=config.get("canopy_height_m")),
         })
 
     return render_template(
@@ -336,7 +347,8 @@ def page_new_flight():
         fov_h_deg=config.get("fov_h_deg"), fov_v_deg=config.get("fov_v_deg"),
         plot_w_m=first["width_m"] if first else None,
         plot_h_m=first["height_m"] if first else None,
-        resolution=tuple(config.get("resolution")))
+        resolution=tuple(config.get("resolution")),
+        canopy_m=config.get("canopy_height_m"))
     return render_template("newflight.html", view="newflight", checks=checks,
                            storage=storage, est_photos=est_photos, plan=plan,
                            selected_block=first,
@@ -359,7 +371,8 @@ def page_plan():
         fov_h_deg=config.get("fov_h_deg"), fov_v_deg=config.get("fov_v_deg"),
         plot_w_m=default.get("width_m", default.get("w")),
         plot_h_m=default.get("height_m", default.get("h")),
-        resolution=tuple(config.get("resolution")))
+        resolution=tuple(config.get("resolution")),
+        canopy_m=config.get("canopy_height_m"))
     return render_template("plan.html", view="plan", plan=plan,
                            test_areas=flights_mod.TEST_AREAS,
                            usable_minutes=flights_mod.USABLE_FLIGHT_MINUTES,
@@ -464,7 +477,7 @@ def api_capture_create():
     ok, result = _do_capture(
         label=label, notes=notes,
         flight_id=flight["id"] if flight else None,
-        geo=tel.geo_now(), trigger="manual",
+        geo=_with_canopy(tel.geo_now()), trigger="manual",
         from_preview=bool(payload.get("from_preview")),
         overrides=overrides)
     if not ok:
@@ -958,6 +971,7 @@ def api_mission_plan():
         plot_w_m=plot_w, plot_h_m=plot_h, polygon=polygon,
         speed_ms=num("speed", flights_mod.DEFAULT_SURVEY_SPEED_MS),
         resolution=tuple(config.get("resolution")),
+        canopy_m=num("canopy", config.get("canopy_height_m")),
     )
     return jsonify(plan)
 

@@ -30,11 +30,25 @@
     const plotW = document.getElementById('mp-plot-w');
     const plotH = document.getElementById('mp-plot-h');
     const blockPick = document.getElementById('mp-block');
+    const canopy = document.getElementById('mp-canopy');
 
     function paintPlan(p) {
       setText('mp-trigger', p.trigger_distance_m + ' m');
       setText('mp-spacing', p.line_spacing_m + ' m');
-      setText('mp-footprint', p.footprint_w_m + ' × ' + p.footprint_h_m + ' m');
+      setText('mp-above', p.above_canopy_m + ' m' +
+        (p.canopy_m ? ' (' + p.altitude_m + ' m up, ' + p.canopy_m + ' m plants)' : ''));
+      setText('mp-footprint', p.footprint_w_m + ' × ' + p.footprint_h_m +
+        ' m of ' + (p.canopy_m ? 'canopy' : 'ground'));
+      // QGroundControl works its spacing out to the ground at the mission
+      // altitude; these overlaps make it arrive at the spacing above instead.
+      setText('mp-gcs-overlap', 'front ' + p.gcs_forward_overlap_pct + '% · side ' +
+        p.gcs_side_overlap_pct + '%');
+      setText('mp-gcs-note', p.canopy_m
+        ? 'QGroundControl assumes bare ground, so its own overlap boxes need these ' +
+          'higher values to give ' + p.forward_overlap_pct + '% / ' +
+          p.side_overlap_pct + '% on the plants. Its Trigger Dist and Spacing ' +
+          'should then read the two numbers above.'
+        : 'No plants to allow for, so these match the sliders.');
       setText('mp-gsd', p.gsd_cm ? p.gsd_cm + ' cm per pixel' : '—');
       // With a traced block the area is the outline's own, so it deliberately
       // does not multiply out from the two dimensions — those are the plot's
@@ -70,6 +84,7 @@
         altitude: alt.value,
         forward: (parseFloat(fwd.value) / 100).toFixed(2),
         side: (parseFloat(side.value) / 100).toFixed(2),
+        canopy: canopy ? canopy.value : '',
         plot_w: plotW ? plotW.value : '',
         plot_h: plotH ? plotH.value : ''
       });
@@ -83,6 +98,15 @@
       function (v) { return Math.round(v) + '%'; }, refreshPlan);
     HC.slider(side, document.getElementById('mp-side-label'),
       function (v) { return Math.round(v) + '%'; }, refreshPlan);
+    if (canopy) {
+      // One plant height for the whole app: the map uses it to size each photo,
+      // so it is saved rather than kept as page-only planning state.
+      HC.slider(canopy, document.getElementById('mp-canopy-label'),
+        function (v) { return v.toFixed(1) + ' m'; }, refreshPlan);
+      canopy.addEventListener('change', function () {
+        HC.saveSetting({ canopy_height_m: parseFloat(canopy.value) });
+      });
+    }
     if (plotW) plotW.addEventListener('input', refreshPlan);
     if (plotH) plotH.addEventListener('input', refreshPlan);
 

@@ -128,6 +128,14 @@ DEFAULTS = {
     "trigger_mode": "distance",          # "distance" | "waypoint" | "interval"
     "trigger_distance_m": 5,
     "trigger_interval_s": 2,
+    # How tall the crop is. Altitude is measured from the ground at launch, but
+    # the camera photographs the top of the plants, so the height that sets the
+    # footprint is altitude minus this. Dragon fruit on trellis posts stands
+    # roughly 1.5-2 m; at 5 m that is the difference between 40% overlap and
+    # 10%, which the first farm flight showed. 1.5 m is a starting value, not a
+    # measurement -- measure a row and set it (RESEARCH-GAPS.md section 12).
+    # Use 0 over bare ground or grass.
+    "canopy_height_m": 1.5,
 
     # ── guided setup ──────────────────────────────────────────────────────
     "setup_completed": False,
@@ -147,6 +155,7 @@ _LIMITS = {
     "gain": (1.0, 16.0),
     "warmup_s": (0.0, 10.0),
     "nir_leak_coef": (0.0, 2.0),
+    "canopy_height_m": (0.0, 20.0),
     "fov_h_deg": (10.0, 180.0),
     "fov_v_deg": (10.0, 180.0),
     "threshold_healthy": (-0.9, 0.95),

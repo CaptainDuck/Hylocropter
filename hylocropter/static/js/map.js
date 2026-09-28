@@ -891,6 +891,104 @@
     pinToggle.closest('.map-toggle').hidden = pins.length === 0;
   }
 
+  /* ── live location ──────────────────────────────────────────────────────
+     The drone's own GPS, so you can see where on the imagery you are standing
+     before you fly, or where the drone is while it flies. Polled only while the
+     box is ticked; the choice is remembered on this device. Every way it can be
+     missing -- no link, no fix -- says so in words rather than just showing no
+     dot. */
+  const liveBox = document.getElementById('map-live');
+  const liveStatus = document.getElementById('map-live-status');
+  const liveCentre = document.getElementById('map-live-centre');
+  const LIVE_KEY = 'hc.map.live';
+  let livePoll = null, liveDot = null, liveRing = null, liveAt = null;
+  let liveCentred = false;
+
+  function liveSay(text, bad) {
+    liveStatus.hidden = false;
+    liveStatus.textContent = text;
+    liveStatus.classList.toggle('is-bad', !!bad);
+  }
+
+  function liveClear() {
+    if (liveDot) { map.removeLayer(liveDot); liveDot = null; }
+    if (liveRing) { map.removeLayer(liveRing); liveRing = null; }
+    liveCentre.hidden = true;
+  }
+
+  function liveTick() {
+    return HC.api('/api/telemetry').then(function (snap) {
+      if (!snap.connected) {
+        liveClear();
+        liveSay('Not connected to the drone — ' + (snap.detail || 'no link') + '.', true);
+        return;
+      }
+      const pos = snap.position;
+      const gps = snap.gps || {};
+      if (!pos || gps.fix_type < 2) {
+        liveClear();
+        liveSay('Connected, but no GPS fix yet (' + (gps.satellites || 0) +
+                ' satellites). Give it a minute in the open.', true);
+        return;
+      }
+      const at = [pos.lat, pos.lon];
+      // HDOP times the receiver's rough base error is the usual back-of-envelope
+      // accuracy. It is an estimate, so the ring is labelled "about".
+      const radius = Math.max(1.5, (gps.hdop || 1) * 2.5);
+      if (!liveDot) {
+        liveRing = L.circle(at, {
+          radius: radius, color: '#1f6feb', weight: 1, fillColor: '#1f6feb',
+          fillOpacity: 0.12, interactive: false
+        }).addTo(map);
+        liveDot = L.circleMarker(at, {
+          radius: 7, color: '#ffffff', weight: 2.5, fillColor: '#1f6feb',
+          fillOpacity: 1
+        }).addTo(map).bindTooltip('Drone');
+      } else {
+        liveDot.setLatLng(at);
+        liveRing.setLatLng(at).setRadius(radius);
+      }
+      liveAt = at;
+      liveCentre.hidden = false;
+      if (!liveCentred) {
+        liveCentred = true;
+        map.setView(at, Math.max(map.getZoom(), 18));
+      }
+      liveSay(pos.lat.toFixed(6) + ', ' + pos.lon.toFixed(6) + ' · ' +
+              gps.fix_label + ', ' + gps.satellites + ' satellites · about ±' +
+              radius.toFixed(0) + ' m' +
+              (snap.armed && pos.rel_alt_m != null
+                ? ' · ' + pos.rel_alt_m.toFixed(1) + ' m up' : ''));
+    }).catch(function () {
+      liveSay('Could not reach the Pi.', true);
+      throw new Error('telemetry');     // let the poller back off
+    });
+  }
+
+  function liveSet(on) {
+    try { localStorage.setItem(LIVE_KEY, on ? '1' : '0'); } catch (e) {}
+    if (on && !livePoll) {
+      liveCentred = false;
+      liveSay('Looking for the drone…');
+      livePoll = HC.poll(liveTick, 2000);
+    } else if (!on && livePoll) {
+      livePoll.stop();
+      livePoll = null;
+      liveClear();
+      liveStatus.hidden = true;
+    }
+  }
+
+  if (liveBox) {
+    liveBox.addEventListener('change', function () { liveSet(liveBox.checked); });
+    liveCentre.addEventListener('click', function () {
+      if (liveAt) map.setView(liveAt, Math.max(map.getZoom(), 18));
+    });
+    let wasOn = false;
+    try { wasOn = localStorage.getItem(LIVE_KEY) === '1'; } catch (e) {}
+    if (wasOn) { liveBox.checked = true; liveSet(true); }
+  }
+
   /* ── go ─────────────────────────────────────────────────────────────────── */
 
   buildPins();

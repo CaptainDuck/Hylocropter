@@ -859,3 +859,55 @@ def test_a_concave_plot_is_not_mistaken_for_a_crossed_one():
 def test_three_corners_can_never_cross():
     assert flights.is_simple_polygon([tuple(p) for p in _poly(
         [(0, 0), (60, 0), (30, 50)])])
+
+
+# ── the crop is not the ground ───────────────────────────────────────────────
+# The first farm flight: 5 m above launch over ~1.5 m dragon fruit. Planned for
+# bare ground the photos barely overlapped, because the camera was really only
+# ~3.5 m above what it was photographing.
+
+def test_the_plan_is_worked_out_at_the_plant_tops():
+    bare = flights.mission_plan(5)
+    crop = flights.mission_plan(5, canopy_m=1.5)
+    assert crop["above_canopy_m"] == pytest.approx(3.5)
+    assert crop["footprint_w_m"] == pytest.approx(bare["footprint_w_m"] * 0.7, abs=0.02)
+    assert crop["trigger_distance_m"] == pytest.approx(
+        bare["trigger_distance_m"] * 0.7, abs=0.1)
+
+
+def test_qgroundcontrol_overlaps_reproduce_the_canopy_spacing():
+    """QGC does the same trigonometry to the ground at the mission altitude.
+    Typing these overlaps in must make it arrive at our spacing."""
+    import math
+    p = flights.mission_plan(5, canopy_m=1.5)
+    ground_h = 2 * 5 * math.tan(math.radians(48.8 / 2))
+    ground_w = 2 * 5 * math.tan(math.radians(62.2 / 2))
+    assert ground_h * (1 - p["gcs_forward_overlap_pct"] / 100) == pytest.approx(
+        p["trigger_distance_m"], abs=0.1)
+    assert ground_w * (1 - p["gcs_side_overlap_pct"] / 100) == pytest.approx(
+        p["line_spacing_m"], abs=0.1)
+    # and with nothing growing, they are just the overlaps asked for
+    q = flights.mission_plan(5, canopy_m=0)
+    assert (q["gcs_forward_overlap_pct"], q["gcs_side_overlap_pct"]) == (40, 30)
+
+
+def test_flying_barely_above_the_crop_is_warned_about():
+    assert any("above the plants" in w
+               for w in flights.mission_plan(5, canopy_m=2)["warnings"])
+
+
+def test_a_photo_footprint_is_the_canopy_it_saw():
+    geo = {"lat": 14.13, "lon": 121.08, "rel_alt_m": 5.0}
+    bare = flights.footprint(geo)
+    crop = flights.footprint({**geo, "canopy_m": 1.5})
+    assert crop["width_m"] == pytest.approx(bare["width_m"] * 0.7, abs=0.02)
+    # the photo's own record wins over the current setting...
+    assert flights.footprint({**geo, "canopy_m": 1.5}, canopy_m=0)["width_m"] \
+        == crop["width_m"]
+    # ...which is only the fallback for photos taken before it was recorded
+    assert flights.footprint(geo, canopy_m=1.5)["width_m"] == crop["width_m"]
+
+
+def test_a_photo_taken_at_crop_height_has_no_footprint():
+    assert flights.footprint({"lat": 0, "lon": 0, "rel_alt_m": 1.8,
+                              "canopy_m": 1.5}) is None

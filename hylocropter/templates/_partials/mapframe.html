@@ -73,6 +73,19 @@
         </label>
       {% endif %}
 
+      {# Where the drone is now, off its own GPS. Not the phone's: a browser
+         only hands out its location to https pages, and the Pi serves plain
+         http on its own hotspot, so the drone -- which is standing next to you
+         before take-off -- is the location there is. #}
+      <div class="map-block" style="padding-bottom:8px">
+        <label class="map-toggle">
+          <input type="checkbox" id="map-live">
+          <span>Live location (drone GPS)</span>
+        </label>
+        <div class="map-live-status" id="map-live-status" hidden></div>
+        <button class="btn btn-ghost btn-sm" id="map-live-centre" hidden>Centre on it</button>
+      </div>
+
       {# ── survey blocks ────────────────────────────────────────────────────
          A farm has several plots and none of them are square, so this is a list
          of named rectangles drawn corner to corner. The names are also the

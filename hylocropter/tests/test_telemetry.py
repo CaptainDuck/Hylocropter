@@ -343,3 +343,41 @@ def test_a_changed_checksum_in_mission_current_re_reads_at_once(svc):
         "same mission; and `total` excludes home, so 2 vs 3 is not a change"
     svc._handle(Msg("MISSION_CURRENT", seq=0, total=2, mission_id=0xCAFE))
     assert svc._conn.mav.mission_list_requests == before + 1
+
+
+# ── what the mission card reports ────────────────────────────────────────────
+
+def _survey(svc, home_amsl=170.0, alt=5.0, spacing=4.2, lines=4, length=30.0,
+            turnaround=2.0):
+    """A QGC-shaped survey: home, then per line turnaround-in, start, end,
+    turnaround-out, with DO commands sprinkled in."""
+    import math
+    lat0, lon0 = 14.1307, 121.0823
+    m_lon = 111320 * math.cos(math.radians(lat0))
+    items = [(lat0, lon0, home_amsl, 16)]                       # 0: home
+    items.append((0, 0, 0, 206))                                # DO_SET_CAM_TRIGG_DIST
+    for i in range(lines):
+        y = i * spacing
+        xs = [-turnaround, 0, length, length + turnaround]
+        if i % 2:
+            xs = xs[::-1]
+        for x in xs:
+            items.append((lat0 + y / 111320, lon0 + x / m_lon, alt, 16))
+    items.append((0, 0, 0, 206))
+    svc._handle(Msg("MISSION_COUNT", count=len(items)))
+    for seq, (la, lo, z, cmd) in enumerate(items):
+        svc._handle(Msg("MISSION_ITEM_INT", seq=seq, x=int(la * 1e7),
+                        y=int(lo * 1e7), z=z, command=cmd))
+    return svc.snapshot()["mission"]
+
+
+def test_the_mission_altitude_leaves_out_home(svc):
+    """Home's altitude is above sea level. Averaging it in once turned a 5 m
+    survey into 51.5 m on the card."""
+    assert _survey(svc)["altitude_m"] == 5.0
+
+
+def test_line_spacing_is_measured_across_the_lines_not_along_the_route(svc):
+    """The route alternates line, 2 m turnaround, crossover -- the median of
+    consecutive distances is the turnaround. It used to report 2.0 m."""
+    assert _survey(svc, spacing=4.2)["line_spacing_m"] == pytest.approx(4.2, abs=0.1)

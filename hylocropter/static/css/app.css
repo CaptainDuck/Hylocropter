@@ -207,6 +207,11 @@
 }
 .map-opacity input[type="range"] { height: 22px; flex: 1; }
 .map-toggle input { width: 15px; height: 15px; accent-color: var(--color-accent); }
+.map-live-status {
+  font-size: 11.5px; line-height: 1.4; font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+}
+.map-live-status.is-bad { color: var(--stress-stressed); }
 
 /* the survey blocks: "which parts of this neighbourhood do I actually fly?" */
 .map-block { display: flex; flex-direction: column; gap: 7px; }

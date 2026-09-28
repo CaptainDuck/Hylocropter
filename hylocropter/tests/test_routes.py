@@ -155,7 +155,7 @@ def test_a_bad_setting_is_reported_not_500(client):
 
 def test_the_mission_plan_endpoint_returns_the_two_numbers(client):
     plan = client.get("/api/mission/plan?altitude_m=12&forward_overlap=0.4"
-                      "&side_overlap=0.3&plot_side_m=100").get_json()
+                      "&side_overlap=0.3&plot_side_m=100&canopy=0").get_json()
     assert plan["trigger_distance_m"] == pytest.approx(6.5, abs=0.1)
     assert plan["line_spacing_m"] == pytest.approx(10.1, abs=0.1)
     assert plan["plot_area_ha"] == pytest.approx(1.0, abs=0.01)
@@ -514,3 +514,18 @@ def test_the_pre_flight_card_can_be_refreshed_on_its_own(client):
     assert "<html" not in html.lower(), "just the card, not a whole page"
     page = client.get("/new-flight").get_data(as_text=True)
     assert 'id="preflight"' in page and "/new-flight/preflight" in page
+
+
+def test_the_plan_allows_for_the_plants_by_default(client):
+    """The camera sees plant tops. The saved plant height comes off the
+    altitude unless the page says otherwise."""
+    bare = client.get("/api/mission/plan?altitude=5&canopy=0").get_json()
+    crop = client.get("/api/mission/plan?altitude=5").get_json()
+    assert crop["canopy_m"] == 1.5
+    assert crop["trigger_distance_m"] < bare["trigger_distance_m"]
+    assert crop["gcs_forward_overlap_pct"] > crop["forward_overlap_pct"]
+
+
+def test_the_map_offers_live_location(client):
+    page = client.get("/").get_data(as_text=True)
+    assert 'id="map-live"' in page

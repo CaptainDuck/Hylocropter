@@ -50,6 +50,10 @@ MISSION_REREAD_DELAY_S = 3.0
 # for triggers and position, and nobody uploads a new plan mid-survey.
 MISSION_POLL_S = 10.0
 
+# Mission items that are places to fly through. Everything else in a survey --
+# DO_SET_CAM_TRIGG_DIST, DO_CHANGE_SPEED -- carries no position.
+MAV_CMD_NAV_WAYPOINT = 16
+
 # ArduPilot copter mode numbers -> names, for the modes this project sees.
 # AUTO is the one that matters: a mission is running.
 COPTER_MODES = {
@@ -417,7 +421,9 @@ class TelemetryService:
 
         elif kind in ("MISSION_ITEM_INT", "MISSION_ITEM"):
             scale = 1e7 if kind == "MISSION_ITEM_INT" else 1.0
-            self._mission_items[msg.seq] = (msg.x / scale, msg.y / scale, msg.z)
+            self._mission_items[msg.seq] = (
+                msg.x / scale, msg.y / scale, msg.z,
+                getattr(msg, "command", MAV_CMD_NAV_WAYPOINT))
             self._update_mission_geometry()
 
         elif kind == "MISSION_CURRENT":
@@ -504,27 +510,28 @@ class TelemetryService:
     def _update_mission_geometry(self):
         """Derive mission altitude and line spacing from the waypoints.
 
-        Line spacing is the median distance between consecutive parallel legs.
-        It is only an estimate, but it is what the pre-flight card reports, and
-        deriving it beats asking the user to type it in twice.
+        Only real waypoints count. Item 0 is ArduPilot's home position, whose
+        altitude is above sea level rather than above launch -- averaging it in
+        is how a 5 m survey once reported 51.5 m.
+
+        Line spacing is the distance between parallel flight lines, measured
+        across them: every waypoint is projected onto the axis perpendicular to
+        the longest leg, the waypoints of one line land on the same offset, and
+        the spacing is the median step between those offsets. Consecutive-point
+        distances do not work here -- a survey with turnarounds alternates line,
+        2 m turnaround, crossover, so their median is the turnaround.
         """
-        items = [v for _, v in sorted(self._mission_items.items())]
-        pts = [(lat, lon, alt) for lat, lon, alt in items
-               if lat or lon]
+        pts = [(lat, lon, alt) for seq, (lat, lon, alt, cmd)
+               in sorted(self._mission_items.items())
+               if seq > 0 and cmd == MAV_CMD_NAV_WAYPOINT and (lat or lon)]
         if len(pts) < 2:
             return
         alts = [alt for _, _, alt in pts if alt]
-        gaps = []
-        for i in range(len(pts) - 1):
-            (la1, lo1, _), (la2, lo2, _) = pts[i], pts[i + 1]
-            gaps.append(_haversine_m(la1, lo1, la2, lo2))
+        spacing = _line_spacing_m(pts)
         with self._lock:
             self._snap["mission"]["altitude_m"] = (
                 round(sum(alts) / len(alts), 1) if alts else None)
-            if gaps:
-                short = sorted(g for g in gaps if g > 0.5)
-                self._snap["mission"]["line_spacing_m"] = (
-                    round(short[len(short) // 2], 1) if short else None)
+            self._snap["mission"]["line_spacing_m"] = spacing
 
     def _close(self):
         if self._conn is not None:
@@ -544,3 +551,23 @@ def _haversine_m(lat1, lon1, lat2, lon2):
     a = (math.sin(dp / 2) ** 2
          + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2)
     return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _line_spacing_m(pts):
+    """Distance between parallel survey lines, or None for a simple route."""
+    import math
+    lat0 = pts[0][0]
+    k = 111_320.0
+    xy = [((lon - pts[0][1]) * k * math.cos(math.radians(lat0)),
+           (lat - lat0) * k) for lat, lon, _ in pts]
+    legs = [(xy[i], xy[i + 1]) for i in range(len(xy) - 1)]
+    (ax, ay), (bx, by) = max(legs, key=lambda l: math.dist(*l))
+    length = math.dist((ax, ay), (bx, by))
+    if length < 1.0:
+        return None
+    nx, ny = -(by - ay) / length, (bx - ax) / length       # across the lines
+    offsets = sorted(x * nx + y * ny for x, y in xy)
+    steps = [b - a for a, b in zip(offsets, offsets[1:]) if b - a > 0.5]
+    if not steps:
+        return None
+    return round(sorted(steps)[len(steps) // 2], 1)

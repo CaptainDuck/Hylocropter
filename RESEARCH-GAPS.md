@@ -632,6 +632,30 @@ it later never rewrites what an old capture meant.
 
 ---
 
+## 12. 🟡 Plant height (`canopy_height_m = 1.5`) is an estimate, not a measurement
+
+Mission altitude is measured from the ground at the launch point. The camera photographs
+the **tops of the plants**, so the height that sets each photo's footprint is altitude
+minus crop height. At 5 m over dragon fruit that is the difference between the planned
+40 % overlap and about 10 %.
+
+The first farm flight (28 Sep, "farm 1", 5 m, trigger 2.7 m, lines 4.5 m apart) showed
+it: consecutive photos shared no plants at all, and each frame covered about one plant.
+From the frames, the camera was roughly 3–3.5 m above the canopy, which puts the crop at
+about 1.5–2 m. Hence the default of 1.5 m.
+
+**What it affects:** the planner (trigger distance, line spacing, and the overlaps to
+enter in QGroundControl, which can only do the maths to bare ground), and the size of
+each photo drawn on the map. Every photo records the value in force when it was taken
+(`geo.canopy_m`), so changing the setting later does not resize old flights. Photos from
+before that was recorded fall back to the current setting.
+
+**To close it:** measure a few rows with a tape: post height plus the droop of the
+canopy above it. Set it in Settings or on the planner. Use 0 over grass (the school
+field).
+
+---
+
 ## Suggested order of attack
 
 | # | Task | Where | Effort |

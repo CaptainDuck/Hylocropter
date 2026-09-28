@@ -517,20 +517,32 @@ def build_grid(captures, bounds, t_healthy, t_moderate,
     return {"cols": cols, "rows": rows, "cells": cells, "covered": covered}
 
 
-def footprint(geo, fov_h_deg=62.2, fov_v_deg=48.8):
+def footprint(geo, fov_h_deg=62.2, fov_v_deg=48.8, canopy_m=0.0):
     """How much ground one photo covers, as a centre + half-extents in metres.
 
     Straight trigonometry for a nadir-pointing camera: at height h, a lens with
     horizontal angle of view a covers 2*h*tan(a/2) across. For the Pi Camera v2
     (62.2 x 48.8 degrees) at 12 m that is about 14.5 x 10.9 m.
 
+    h is the height above the *plant tops*: the altitude above launch minus the
+    crop height. A photo records the canopy it was taken with (`geo.canopy_m`,
+    set when the shutter fired); `canopy_m` is only the fallback for photos taken
+    before that was recorded.
+
     Returns None when there is no usable height — without altitude the footprint
     is unknowable, and guessing one would put invented ground on the map.
     """
     if not geo:
         return None
-    height = geo.get("rel_alt_m")
-    if not height or height <= 0:
+    altitude = geo.get("rel_alt_m")
+    if not altitude or altitude <= 0:
+        return None
+    canopy = geo.get("canopy_m")
+    canopy = float(canopy_m or 0.0) if canopy is None else float(canopy)
+    height = altitude - max(0.0, canopy)
+    if height <= 0.5:
+        # At or below the crop: whatever this photo shows, a footprint from it
+        # would be fiction.
         return None
     half_w = height * math.tan(math.radians(fov_h_deg / 2.0))
     half_h = height * math.tan(math.radians(fov_v_deg / 2.0))
@@ -539,16 +551,17 @@ def footprint(geo, fov_h_deg=62.2, fov_v_deg=48.8):
         "half_w_m": round(half_w, 3), "half_h_m": round(half_h, 3),
         "width_m": round(half_w * 2, 2), "height_m": round(half_h * 2, 2),
         "heading_deg": geo.get("heading_deg") or 0.0,
-        "height_m_agl": height,
+        "height_m_agl": altitude,
+        "above_canopy_m": round(height, 2),
         # metres per pixel at the capture's own resolution, i.e. the ground
         # sampling distance — the honest limit on what this data can resolve
         "gsd_cm": None,
     }
 
 
-def ground_sampling_distance_cm(geo, resolution, fov_h_deg=62.2):
-    """Centimetres per pixel on the ground. The real resolution limit."""
-    fp = footprint(geo, fov_h_deg)
+def ground_sampling_distance_cm(geo, resolution, fov_h_deg=62.2, canopy_m=0.0):
+    """Centimetres per pixel on the plants. The real resolution limit."""
+    fp = footprint(geo, fov_h_deg, canopy_m=canopy_m)
     if not fp or not resolution:
         return None
     return round(fp["width_m"] / max(1, resolution[0]) * 100, 2)
@@ -944,8 +957,14 @@ def _bearing_label(angle_rad):
 def mission_plan(altitude_m, fov_h_deg=62.2, fov_v_deg=48.8,
                  forward_overlap=0.40, side_overlap=0.30, plot_side_m=None,
                  plot_w_m=None, plot_h_m=None, polygon=None,
-                 speed_ms=DEFAULT_SURVEY_SPEED_MS, resolution=(3280, 2464)):
+                 speed_ms=DEFAULT_SURVEY_SPEED_MS, resolution=(3280, 2464),
+                 canopy_m=0.0):
     """Work out what to type into Mission Planner for a given altitude.
+
+    `altitude_m` is what the mission says -- height above the launch point. The
+    photos are of the plant tops, though, so everything here is worked out at
+    `altitude_m - canopy_m`. At 5 m over 1.5 m dragon fruit that is 30% less
+    ground per photo, and a mission planned for bare ground leaves gaps.
 
     The camera is assumed mounted with its **wide** axis across the flight track,
     which is the usual way round because it maximises swath width. So the
@@ -968,14 +987,26 @@ def mission_plan(altitude_m, fov_h_deg=62.2, fov_v_deg=48.8,
     that go straight into the mission: CAM_TRIGG_DIST and the line spacing.
     """
     h = max(1.0, float(altitude_m))
-    swath_w = 2 * h * math.tan(math.radians(fov_h_deg / 2.0))   # across track
-    along_h = 2 * h * math.tan(math.radians(fov_v_deg / 2.0))   # along track
+    canopy = min(max(0.0, float(canopy_m or 0.0)), h - 0.5)
+    above = h - canopy                       # camera to plant tops
+    swath_w = 2 * above * math.tan(math.radians(fov_h_deg / 2.0))   # across track
+    along_h = 2 * above * math.tan(math.radians(fov_v_deg / 2.0))   # along track
 
     forward_overlap = min(0.9, max(0.0, float(forward_overlap)))
     side_overlap = min(0.9, max(0.0, float(side_overlap)))
 
     photo_spacing = along_h * (1.0 - forward_overlap)
     line_spacing = swath_w * (1.0 - side_overlap)
+
+    # QGroundControl's survey (with the camera specs entered) does this same
+    # trigonometry at the mission altitude, to the ground -- it cannot know about
+    # the crop. These are the overlaps to type into it so that the spacing it
+    # works out is the one above: the same distances, as a share of the larger
+    # ground-level footprint.
+    ground_w = 2 * h * math.tan(math.radians(fov_h_deg / 2.0))
+    ground_h = 2 * h * math.tan(math.radians(fov_v_deg / 2.0))
+    gcs_forward = 1.0 - photo_spacing / ground_h
+    gcs_side = 1.0 - line_spacing / ground_w
 
     # A square shorthand, an explicit rectangle, or the placeholder.
     if plot_w_m is None and plot_h_m is None and plot_side_m is None:
@@ -1037,7 +1068,13 @@ def mission_plan(altitude_m, fov_h_deg=62.2, fov_v_deg=48.8,
             f"Photos every {photo_spacing:.1f} m is faster than the camera can "
             f"comfortably capture and save at full resolution. Fly higher or "
             f"lower the forward overlap.")
-    if h < 5:
+    if canopy and above < 3.5:
+        warnings.append(
+            f"Only {above:.1f} m above the plants. Each photo covers "
+            f"{swath_w:.1f} x {along_h:.1f} m of canopy, so it takes a great many "
+            f"photos, and one GPS wobble opens a gap. Fly higher if the site "
+            f"allows it.")
+    elif h < 5:
         warnings.append("Below about 5 m the footprint is tiny and you will need "
                         "a great many photos to cover anything.")
     if h > 60:
@@ -1046,6 +1083,10 @@ def mission_plan(altitude_m, fov_h_deg=62.2, fov_v_deg=48.8,
 
     return {
         "altitude_m": round(h, 1),
+        "canopy_m": round(canopy, 2),
+        "above_canopy_m": round(above, 2),
+        "gcs_forward_overlap_pct": round(max(0.0, gcs_forward) * 100),
+        "gcs_side_overlap_pct": round(max(0.0, gcs_side) * 100),
         "footprint_w_m": round(swath_w, 2),
         "footprint_h_m": round(along_h, 2),
         "gsd_cm": round(gsd_cm, 2) if gsd_cm else None,

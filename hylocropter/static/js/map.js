@@ -550,10 +550,18 @@
    *
    *  Built into one canvas and added as a single image overlay: twenty separate
    *  overlays would each be a DOM node Leaflet has to reposition on every pan.
-   *  Photos overlap (at 12 m the footprint is ~14 m across and the trigger fires
-   *  every 5 m), and later ones simply draw over earlier ones — this is a
-   *  telemetry-placed mosaic, not a blended orthomosaic, which is exactly what
-   *  the thesis describes.
+   *  This is a telemetry-placed mosaic, not a blended orthomosaic, which is
+   *  exactly what the thesis describes.
+   *
+   *  Photos overlap, and each is rotated to the heading the drone held when it
+   *  was taken -- which wanders a few degrees shot to shot. Stacked whole, that
+   *  left a pile of tilted edges and dark vignetted corners poking out from
+   *  under each other. So each photo is trimmed to its seamline: the part of
+   *  its footprint nearer its own centre than any neighbour's (a Voronoi cell,
+   *  clipped to the footprint). Every spot on the map then shows the photo that
+   *  saw it most squarely, the joins are clean straight lines, and the corners
+   *  -- always furthest from the centre -- are the parts that get dropped.
+   *  Ground only one photo covered keeps that photo; nothing is invented.
    */
   function buildMosaic() {
     return new Promise(function (resolve) {
@@ -575,15 +583,49 @@
       const usable = pins.filter(function (p) { return p.footprint && p.thumb; });
       if (!usable.length) { resolve(null); return; }
 
-      let pending = usable.length;
-      usable.forEach(function (p) {
+      // Every footprint in canvas pixels, then each one cut down to its seam.
+      const shapes = usable.map(function (p) {
+        const x = (p.lon - west) * mPerDegLon(midLat) * pxPerM;
+        const y = (north - p.lat) * M_PER_DEG_LAT * pxPerM;
+        const w = p.footprint.half_w_m * 2 * pxPerM;
+        const h = p.footprint.half_h_m * 2 * pxPerM;
+        return { p: p, x: x, y: y, w: w, h: h,
+                 rect: rotatedRect(x, y, w, h, (p.heading || 0) * Math.PI / 180) };
+      });
+      shapes.forEach(function (a) {
+        let cell = a.rect;
+        const reachA = Math.hypot(a.w, a.h) / 2;
+        shapes.forEach(function (b) {
+          if (a === b || !cell.length) return;
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const d = Math.hypot(dx, dy);
+          // Too far to share any ground, or taken from the same spot (a hover):
+          // no seam to cut, and a bisector of two identical points is undefined.
+          if (d < 1e-6 || d > reachA + Math.hypot(b.w, b.h) / 2) return;
+          cell = clipHalfPlane(cell, (a.x + b.x) / 2, (a.y + b.y) / 2, dx, dy);
+        });
+        a.cell = cell;
+      });
+
+      let pending = shapes.length;
+      shapes.forEach(function (s) {
+        const p = s.p;
         const img = new Image();
         img.onload = function () {
-          const x = (p.lon - west) * mPerDegLon(midLat) * pxPerM;
-          const y = (north - p.lat) * M_PER_DEG_LAT * pxPerM;
-          const w = p.footprint.half_w_m * 2 * pxPerM;
-          const h = p.footprint.half_h_m * 2 * pxPerM;
+          const x = s.x, y = s.y, w = s.w, h = s.h;
+          // A photo's own centre is always inside its cell, so this only guards
+          // against a degenerate footprint -- and then drawing nothing is right.
+          if (s.cell.length < 3) {
+            if (--pending === 0) resolve(cv.toDataURL());
+            return;
+          }
           ctx.save();
+          ctx.beginPath();
+          s.cell.forEach(function (pt, i) {
+            if (i) ctx.lineTo(pt[0], pt[1]); else ctx.moveTo(pt[0], pt[1]);
+          });
+          ctx.closePath();
+          ctx.clip();
           ctx.translate(x, y);
           // Heading is degrees clockwise from north, which is also the screen
           // rotation for a north-up map.
@@ -596,6 +638,34 @@
         img.src = p.thumb;
       });
     });
+  }
+
+  /** Corners of a w x h rectangle centred on (x, y), turned clockwise by `rad`
+   *  -- the same turn ctx.rotate() gives the image drawn into it. */
+  function rotatedRect(x, y, w, h, rad) {
+    const c = Math.cos(rad), s = Math.sin(rad);
+    return [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]]
+      .map(function (v) {
+        return [x + v[0] * c - v[1] * s, y + v[0] * s + v[1] * c];
+      });
+  }
+
+  /** Keep the part of polygon `poly` on the near side of the line through
+   *  (mx, my) with normal (nx, ny) -- the side the normal points away from.
+   *  Sutherland–Hodgman against one edge. */
+  function clipHalfPlane(poly, mx, my, nx, ny) {
+    const out = [];
+    const side = function (pt) { return (pt[0] - mx) * nx + (pt[1] - my) * ny; };
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const sa = side(a), sb = side(b);
+      if (sa <= 0) out.push(a);
+      if ((sa <= 0) !== (sb <= 0)) {
+        const t = sa / (sa - sb);
+        out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      }
+    }
+    return out;
   }
 
   /* ── grid overlay ───────────────────────────────────────────────────────── */

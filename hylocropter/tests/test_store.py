@@ -514,3 +514,11 @@ def test_duplicate_location_ids_are_made_unique(config):
     ]})
     ids = [s["id"] for s in applied["sites"]]
     assert len(set(ids)) == 2, "two sites sharing an id would make the picker ambiguous"
+
+
+def test_the_camera_turn_snaps_to_a_quarter_turn(config):
+    """A camera is bolted on square; 45 degrees would skew every footprint."""
+    for given, kept in ((0, 0), (90, 90), ("180", 180), (265, 270), (360, 0),
+                        (-90, 270)):
+        applied, _ = config.update({"camera_rotation_deg": given})
+        assert applied["camera_rotation_deg"] == kept, given

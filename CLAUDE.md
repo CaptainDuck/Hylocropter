@@ -51,7 +51,7 @@ python hylocropter/app.py --debug                    # Flask reloader on
 
 ```bash
 pip install -r hylocropter/requirements-dev.txt
-pytest                            # 320 tests, from the repo root or anywhere
+pytest                            # 324 tests, from the repo root or anywhere
 pytest hylocropter/tests/test_index.py -v
 ```
 

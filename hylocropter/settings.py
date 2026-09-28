@@ -136,6 +136,12 @@ DEFAULTS = {
     # measurement -- measure a row and set it (RESEARCH-GAPS.md section 12).
     # Use 0 over bare ground or grass.
     "canopy_height_m": 1.5,
+    # Which way the camera is turned relative to the drone's nose, clockwise
+    # seen from above: 0 means the top of each photo is the nose. Only 0, 90,
+    # 180 and 270. The map turns each photo by heading plus this, and the planner
+    # uses it to know which way the wide side of the frame lies to the flight
+    # line. Measure it: DEPLOYMENT.md, "Which way is the camera turned?".
+    "camera_rotation_deg": 0,
 
     # ── guided setup ──────────────────────────────────────────────────────
     "setup_completed": False,
@@ -293,6 +299,11 @@ class Settings:
                     "survey_blocks", self._values["survey_blocks"])
             except (TypeError, ValueError):
                 self._values["survey_blocks"] = []
+        try:
+            self._values["camera_rotation_deg"] = self._coerce(
+                "camera_rotation_deg", self._values["camera_rotation_deg"])
+        except (TypeError, ValueError):
+            self._values["camera_rotation_deg"] = 0
         # Same for sites: a hand-edited file must not put the map at latitude 900.
         try:
             self._values["sites"] = self._coerce("sites", self._values["sites"])
@@ -408,6 +419,10 @@ class Settings:
 
     def _coerce(self, key, raw):
         default = DEFAULTS[key]
+        if key == "camera_rotation_deg":
+            # Snap to a quarter turn: a camera is bolted on square or not at all,
+            # and 45 degrees would silently skew every footprint on the map.
+            return int(round(float(raw) / 90.0)) * 90 % 360
         if key == "sites":
             if not isinstance(raw, (list, tuple)):
                 raise ValueError("sites must be a list")

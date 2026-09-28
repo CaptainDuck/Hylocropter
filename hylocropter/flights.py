@@ -517,7 +517,8 @@ def build_grid(captures, bounds, t_healthy, t_moderate,
     return {"cols": cols, "rows": rows, "cells": cells, "covered": covered}
 
 
-def footprint(geo, fov_h_deg=62.2, fov_v_deg=48.8, canopy_m=0.0):
+def footprint(geo, fov_h_deg=62.2, fov_v_deg=48.8, canopy_m=0.0,
+              camera_rotation_deg=0):
     """How much ground one photo covers, as a centre + half-extents in metres.
 
     Straight trigonometry for a nadir-pointing camera: at height h, a lens with
@@ -527,7 +528,9 @@ def footprint(geo, fov_h_deg=62.2, fov_v_deg=48.8, canopy_m=0.0):
     h is the height above the *plant tops*: the altitude above launch minus the
     crop height. A photo records the canopy it was taken with (`geo.canopy_m`,
     set when the shutter fired); `canopy_m` is only the fallback for photos taken
-    before that was recorded.
+    before that was recorded. The camera's mounting turn works the same way
+    (`geo.camera_rotation_deg`, fallback `camera_rotation_deg`), and gives
+    `image_up_deg`: the compass direction the top of the photo points.
 
     Returns None when there is no usable height — without altitude the footprint
     is unknowable, and guessing one would put invented ground on the map.
@@ -551,12 +554,21 @@ def footprint(geo, fov_h_deg=62.2, fov_v_deg=48.8, canopy_m=0.0):
         "half_w_m": round(half_w, 3), "half_h_m": round(half_h, 3),
         "width_m": round(half_w * 2, 2), "height_m": round(half_h * 2, 2),
         "heading_deg": geo.get("heading_deg") or 0.0,
+        "image_up_deg": image_up_deg(geo, camera_rotation_deg),
         "height_m_agl": altitude,
         "above_canopy_m": round(height, 2),
         # metres per pixel at the capture's own resolution, i.e. the ground
         # sampling distance — the honest limit on what this data can resolve
         "gsd_cm": None,
     }
+
+
+def image_up_deg(geo, camera_rotation_deg=0):
+    """Compass direction the top of a photo points: the drone's heading plus how
+    the camera is turned on it. The photo's own record wins over the setting."""
+    rot = (geo or {}).get("camera_rotation_deg")
+    rot = camera_rotation_deg if rot is None else rot
+    return (((geo or {}).get("heading_deg") or 0.0) + (rot or 0)) % 360
 
 
 def ground_sampling_distance_cm(geo, resolution, fov_h_deg=62.2, canopy_m=0.0):
@@ -958,7 +970,7 @@ def mission_plan(altitude_m, fov_h_deg=62.2, fov_v_deg=48.8,
                  forward_overlap=0.40, side_overlap=0.30, plot_side_m=None,
                  plot_w_m=None, plot_h_m=None, polygon=None,
                  speed_ms=DEFAULT_SURVEY_SPEED_MS, resolution=(3280, 2464),
-                 canopy_m=0.0):
+                 canopy_m=0.0, camera_rotation_deg=0):
     """Work out what to type into Mission Planner for a given altitude.
 
     `altitude_m` is what the mission says -- height above the launch point. The
@@ -986,6 +998,11 @@ def mission_plan(altitude_m, fov_h_deg=62.2, fov_v_deg=48.8,
     Returns everything needed for the pre-flight card, including the two numbers
     that go straight into the mission: CAM_TRIGG_DIST and the line spacing.
     """
+    # A camera turned a quarter turn has its wide side along the flight line
+    # instead of across it, so the two angles of view trade places.
+    turned = int(camera_rotation_deg or 0) % 180 == 90
+    if turned:
+        fov_h_deg, fov_v_deg = fov_v_deg, fov_h_deg
     h = max(1.0, float(altitude_m))
     canopy = min(max(0.0, float(canopy_m or 0.0)), h - 0.5)
     above = h - canopy                       # camera to plant tops
@@ -1055,7 +1072,8 @@ def mission_plan(altitude_m, fov_h_deg=62.2, fov_v_deg=48.8,
         path_m = lines * along + (lines - 1) * line_spacing
     minutes = path_m / max(0.3, float(speed_ms)) / 60.0
 
-    gsd_cm = swath_w / max(1, resolution[0]) * 100 if resolution else None
+    gsd_cm = (swath_w / max(1, resolution[1 if turned else 0]) * 100
+              if resolution else None)
 
     warnings = []
     if minutes > USABLE_FLIGHT_MINUTES:
@@ -1084,6 +1102,7 @@ def mission_plan(altitude_m, fov_h_deg=62.2, fov_v_deg=48.8,
     return {
         "altitude_m": round(h, 1),
         "canopy_m": round(canopy, 2),
+        "camera_rotation_deg": int(camera_rotation_deg or 0) % 360,
         "above_canopy_m": round(above, 2),
         "gcs_forward_overlap_pct": round(max(0.0, gcs_forward) * 100),
         "gcs_side_overlap_pct": round(max(0.0, gcs_side) * 100),

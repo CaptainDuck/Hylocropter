@@ -911,3 +911,30 @@ def test_a_photo_footprint_is_the_canopy_it_saw():
 def test_a_photo_taken_at_crop_height_has_no_footprint():
     assert flights.footprint({"lat": 0, "lon": 0, "rel_alt_m": 1.8,
                               "canopy_m": 1.5}) is None
+
+
+# ── which way the camera is turned ───────────────────────────────────────────
+
+def test_a_quarter_turned_camera_swaps_trigger_and_spacing():
+    """Wide side along the line instead of across: the along-track footprint
+    grows and the swath shrinks, so the two Mission Planner numbers trade."""
+    square = flights.mission_plan(10, canopy_m=0)
+    turned = flights.mission_plan(10, canopy_m=0, camera_rotation_deg=90)
+    assert turned["footprint_w_m"] == pytest.approx(square["footprint_h_m"])
+    assert turned["footprint_h_m"] == pytest.approx(square["footprint_w_m"])
+    assert turned["trigger_distance_m"] > square["trigger_distance_m"]
+    assert turned["line_spacing_m"] < square["line_spacing_m"]
+    # a half turn changes nothing about the geometry
+    assert flights.mission_plan(10, camera_rotation_deg=180)["line_spacing_m"] \
+        == flights.mission_plan(10)["line_spacing_m"]
+
+
+def test_the_top_of_a_photo_is_the_heading_plus_the_camera_turn():
+    geo = {"heading_deg": 222.0}
+    assert flights.image_up_deg(geo) == 222.0
+    assert flights.image_up_deg(geo, 180) == 42.0
+    # the photo's own record beats the current setting
+    assert flights.image_up_deg({**geo, "camera_rotation_deg": 90}, 180) == 312.0
+    fp = flights.footprint({"lat": 0, "lon": 0, "rel_alt_m": 10, **geo},
+                           camera_rotation_deg=270)
+    assert fp["image_up_deg"] == 132.0

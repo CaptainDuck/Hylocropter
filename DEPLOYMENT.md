@@ -196,6 +196,27 @@ Expect one round of fixes here — message field names and integer scaling
 (lat/lon are 1e7-scaled, altitudes are millimetres) are the usual culprits, and
 none of this decoding has run against a real stream.
 
+### Which way is the camera turned?
+
+The map turns every photo by the drone's heading **plus** how the camera is turned
+on the frame (Settings → *Top of photo points*). Get it wrong and every photo on the
+map is rotated or upside down, the seamlines trim the wrong parts, and the planner's
+trigger distance and line spacing are swapped. It depends only on how the camera is
+mounted, so check it once, and again whenever the mount changes:
+
+- [ ] Draw a big arrow on a sheet of paper, with an **R** beside it. Lay it on the
+      floor pointing the way the drone's nose points.
+- [ ] Hold the drone level about a metre above it and open **Debug**.
+- [ ] Whichever way the arrow points in the picture sets the value: **up → Forward
+      (0°)**, **right → Left (270°)**, **down → Backward (180°)**, **left → Right (90°)**.
+- [ ] The **R** must read normally. If it is back to front, the image is mirrored,
+      which a turn cannot fix; that means a flip in the camera configuration, so
+      report it rather than picking a rotation.
+
+Each photo records the value in force when it was taken, so fixing it later does not
+turn old flights. Photos taken before it was recorded (before 28 Sep) follow the
+current setting.
+
 ### Rehearsal, before anyone drives to Tanauan
 
 Do this at school. It costs one battery and catches the failure that would
@@ -233,7 +254,7 @@ pip install -r hylocropter/requirements-dev.txt
 pytest
 ```
 
-320 tests covering the index maths, the photo→footprint→grid mapping chain, the
+324 tests covering the index maths, the photo→footprint→grid mapping chain, the
 survey blocks, the JSON store, the settings, and every route rendering with no
 camera and no drone.
 `.github/workflows/verify.yml` runs the same suite on every push, in one job,

@@ -97,11 +97,13 @@ def _on_camera_trigger(geo):
 
 
 def _with_canopy(geo):
-    """Stamp a position with the crop height in force when the photo was taken,
-    so changing the setting later cannot resize the footprints of old flights."""
+    """Stamp a position with the crop height and camera turn in force when the
+    photo was taken, so changing either setting later cannot resize or turn the
+    footprints of old flights."""
     if not geo:
         return geo
-    return {**geo, "canopy_m": config.get("canopy_height_m")}
+    return {**geo, "canopy_m": config.get("canopy_height_m"),
+            "camera_rotation_deg": config.get("camera_rotation_deg")}
 
 
 def _start_recorder(flight_id):
@@ -271,11 +273,15 @@ def page_map():
             continue
         fp = flights_mod.footprint(geo, config.get("fov_h_deg"),
                                   config.get("fov_v_deg"),
-                                  canopy_m=config.get("canopy_height_m"))
+                                  canopy_m=config.get("canopy_height_m"),
+                                  camera_rotation_deg=config.get("camera_rotation_deg"))
         pins.append({
             "id": c["id"],
             "lat": geo["lat"], "lon": geo["lon"],
-            "heading": geo.get("heading_deg") or 0.0,
+            # Which way the top of the photo points -- the drone's heading plus
+            # how the camera is turned on it. What the map rotates each photo by.
+            "heading": flights_mod.image_up_deg(
+                geo, config.get("camera_rotation_deg")),
             "alt": geo.get("rel_alt_m"),
             "mean": (c.get("stats") or {}).get("mean"),
             "classification": c.get("classification"),
@@ -372,7 +378,8 @@ def page_new_flight():
         plot_w_m=first["width_m"] if first else None,
         plot_h_m=first["height_m"] if first else None,
         resolution=tuple(config.get("resolution")),
-        canopy_m=config.get("canopy_height_m"))
+        canopy_m=config.get("canopy_height_m"),
+        camera_rotation_deg=config.get("camera_rotation_deg"))
     return render_template("newflight.html", view="newflight", checks=checks,
                            storage=storage, est_photos=est_photos, plan=plan,
                            selected_block=first,
@@ -396,7 +403,8 @@ def page_plan():
         plot_w_m=default.get("width_m", default.get("w")),
         plot_h_m=default.get("height_m", default.get("h")),
         resolution=tuple(config.get("resolution")),
-        canopy_m=config.get("canopy_height_m"))
+        canopy_m=config.get("canopy_height_m"),
+        camera_rotation_deg=config.get("camera_rotation_deg"))
     return render_template("plan.html", view="plan", plan=plan,
                            test_areas=flights_mod.TEST_AREAS,
                            usable_minutes=flights_mod.USABLE_FLIGHT_MINUTES,
@@ -996,6 +1004,7 @@ def api_mission_plan():
         speed_ms=num("speed", flights_mod.DEFAULT_SURVEY_SPEED_MS),
         resolution=tuple(config.get("resolution")),
         canopy_m=num("canopy", config.get("canopy_height_m")),
+        camera_rotation_deg=config.get("camera_rotation_deg"),
     )
     return jsonify(plan)
 

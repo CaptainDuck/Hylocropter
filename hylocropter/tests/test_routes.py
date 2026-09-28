@@ -567,3 +567,8 @@ def test_writes_are_not_redirected(client, https_up):
     res = client.patch("/api/settings", json={},
                        base_url="http://hylocropter.local:5000")
     assert res.status_code == 200
+
+
+def test_settings_offers_the_camera_turn(client):
+    page = client.get("/settings").get_data(as_text=True)
+    assert 'data-setting="camera_rotation_deg"' in page

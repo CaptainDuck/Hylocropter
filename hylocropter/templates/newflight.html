@@ -14,36 +14,8 @@
 
   {% if not recording %}
     {# ── step 1: pre-flight ─────────────────────────────────────────────── #}
-    <div class="card elev-sm" style="margin-bottom:16px">
-      <span class="card-kicker">Before take-off</span>
-      {% for c in checks %}
-        <div class="check-row">
-          <span class="check-mark {{ 'ok' if c.ok else 'bad' }}">{{ '✓' if c.ok else '!' }}</span>
-          <div style="margin-right:auto">
-            <div class="check-label">{{ c.label }}</div>
-            <div class="check-detail">{{ c.detail }}</div>
-          </div>
-        </div>
-      {% endfor %}
-    </div>
-
-    <div class="card elev-sm" style="margin-bottom:16px">
-      <span class="card-kicker">Mission loaded on the drone</span>
-      <div class="stats">
-        {{ stat('Waypoints', telemetry.mission.count or '—') }}
-        {{ stat('Altitude', (telemetry.mission.altitude_m ~ ' m') if telemetry.mission.altitude_m else '—') }}
-        {{ stat('Line spacing', (telemetry.mission.line_spacing_m ~ ' m') if telemetry.mission.line_spacing_m else '—') }}
-        {{ stat('Est. photos', est_photos or '—') }}
-      </div>
-      <div style="font-size:12.5px;color:color-mix(in srgb, var(--color-text) 58%, transparent)">
-        {% if telemetry.connected %}
-          Read off the flight controller over MAVLink, so it always matches what
-          you uploaded from Mission Planner.
-        {% else %}
-          Nothing to read — the flight controller isn't connected, so these stay
-          blank until it is.
-        {% endif %}
-      </div>
+    <div id="preflight" data-refresh="{{ url_for('page_preflight') }}">
+      {% include "_partials/preflight.html" %}
     </div>
 
     {# The planner, shared with /plan. Here it is a last check before take-off;

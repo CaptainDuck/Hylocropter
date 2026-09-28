@@ -43,6 +43,13 @@ RECONNECT_DELAY_S = 5.0
 MISSION_REREAD_ATTEMPTS = 3
 MISSION_REREAD_DELAY_S = 3.0
 
+# The controller never tells us a ground station uploaded a new mission -- that
+# conversation happens on another link. So while the drone is on the ground, ask
+# again every so often. A 50-item survey is about 3 KB, roughly 5% of a 57600
+# baud link for one second in every ten. Never while armed: in flight the link is
+# for triggers and position, and nobody uploads a new plan mid-survey.
+MISSION_POLL_S = 10.0
+
 # ArduPilot copter mode numbers -> names, for the modes this project sees.
 # AUTO is the one that matters: a mission is running.
 COPTER_MODES = {
@@ -95,6 +102,7 @@ class TelemetryService:
         self._mission_items = {}
         self._mission_retries = 0
         self._mission_asked_at = 0.0
+        self._mission_id = None        # the controller's own mission checksum
         self._unavailable_reason = None
         self._seen_feedback = False
         self._last_img_idx = None
@@ -260,10 +268,24 @@ class TelemetryService:
                   self._mission_retries)
         self._request_mission()
 
+    def _poll_mission(self):
+        """Re-read the mission now and then, so an upload shows up on its own.
+
+        Rather than rebooting the Pi to see what Mission Planner or
+        QGroundControl just sent. Skipped while armed and while a read is still
+        being retried.
+        """
+        if self._armed or self._mission_retries:
+            return
+        if time.time() - self._mission_asked_at < MISSION_POLL_S:
+            return
+        self._request_mission()
+
     def _pump(self):
         seen = 0
         while not self._stop.is_set():
             self._retry_mission_read()
+            self._poll_mission()
             msg = self._conn.recv_match(blocking=True, timeout=1.0)
             if msg is None:
                 # Timeout is normal; snapshot() decides if that means stale.
@@ -362,6 +384,18 @@ class TelemetryService:
 
         elif kind == "MISSION_COUNT":
             self._mission_retries = 0
+            # Newer ArduPilot stamps each mission with a checksum. When it has
+            # one and it has not changed, the items have not either, and the
+            # poll costs one message instead of a full download.
+            opaque = getattr(msg, "opaque_id", 0) or None
+            unchanged = (opaque is not None and opaque == self._mission_id
+                         and len(self._mission_items) == msg.count)
+            if opaque is not None:
+                self._mission_id = opaque
+            if unchanged:
+                return
+            if msg.count != self.snapshot()["mission"]["count"]:
+                log.info("mission on the controller: %d items", msg.count)
             with self._lock:
                 self._snap["mission"]["count"] = msg.count
                 self._snap["mission"]["loaded"] = msg.count > 0
@@ -389,6 +423,16 @@ class TelemetryService:
         elif kind == "MISSION_CURRENT":
             with self._lock:
                 self._snap["mission"]["current"] = msg.seq
+            # Newer ArduPilot also reports the mission checksum here, about
+            # once a second, so a changed mission is noticed straight away
+            # rather than at the next poll. (Not the `total` field beside it:
+            # that leaves out the home item, so it never equals MISSION_COUNT.)
+            ident = getattr(msg, "mission_id", 0) or None
+            changed = (ident is not None and self._mission_id is not None
+                       and ident != self._mission_id)
+            if (changed and not self._armed
+                    and time.time() - self._mission_asked_at > MISSION_REREAD_DELAY_S):
+                self._request_mission()
 
         elif kind in ("CAMERA_TRIGGER", "CAMERA_FEEDBACK"):
             if not self._first_report_of_shot(msg, kind):

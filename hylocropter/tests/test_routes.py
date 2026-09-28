@@ -502,3 +502,15 @@ def test_a_whole_mission_arm_trigger_disarm_ends_with_every_photo_on_the_flight(
     assert len(photos) == 3
     assert app_mod.store.flight(flight["id"])["status"] != "recording"
     assert client.get(f"/capture/{photos[0]['id']}").status_code == 200
+
+
+def test_the_pre_flight_card_can_be_refreshed_on_its_own(client):
+    """The New flight page polls this so an uploaded mission appears without a
+    reload -- it used to take a reboot of the Pi."""
+    res = client.get("/new-flight/preflight")
+    assert res.status_code == 200
+    html = res.get_data(as_text=True)
+    assert "Before take-off" in html and "Mission loaded on the drone" in html
+    assert "<html" not in html.lower(), "just the card, not a whole page"
+    page = client.get("/new-flight").get_data(as_text=True)
+    assert 'id="preflight"' in page and "/new-flight/preflight" in page

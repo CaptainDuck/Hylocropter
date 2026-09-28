@@ -287,3 +287,59 @@ def test_a_controller_that_only_sends_trigger_still_takes_photos(svc, shots):
     for i in range(3):
         svc._handle(Msg("CAMERA_TRIGGER", seq=i, time_usec=0))
     assert len(shots) == 3
+
+
+# ── a mission uploaded while we are listening ────────────────────────────────
+# The controller never tells us a ground station uploaded a new plan -- that
+# happens on another link -- so the Pi used to show the old mission until it
+# was rebooted.
+
+def test_the_mission_is_re_read_on_its_own_while_on_the_ground(svc):
+    svc._handle(heartbeat())
+    svc._mission_asked_at = time.time()
+    svc._poll_mission()
+    assert svc._conn.mav.mission_list_requests == 0, "not before the interval"
+
+    svc._mission_asked_at -= telemetry_mod.MISSION_POLL_S + 1
+    svc._poll_mission()
+    assert svc._conn.mav.mission_list_requests == 1
+
+
+def test_it_does_not_poll_the_mission_in_flight(svc):
+    svc._handle(heartbeat(base_mode=81 | 0x80))          # armed
+    svc._mission_asked_at -= telemetry_mod.MISSION_POLL_S + 1
+    svc._poll_mission()
+    assert svc._conn.mav.mission_list_requests == 0
+
+
+def test_a_new_upload_replaces_what_the_card_shows(svc):
+    svc._handle(Msg("MISSION_COUNT", count=4))
+    assert svc.snapshot()["mission"]["count"] == 4
+    svc._handle(Msg("MISSION_COUNT", count=50))          # the next poll
+    assert svc.snapshot()["mission"]["count"] == 50
+    assert svc._conn.mav.item_requests[-50:] == list(range(50))
+
+
+def test_an_unchanged_checksum_skips_the_download(svc):
+    """Newer ArduPilot stamps the mission; same stamp, same items."""
+    svc._handle(Msg("MISSION_COUNT", count=3, opaque_id=0xBEEF))
+    for seq in range(3):
+        svc._handle(Msg("MISSION_ITEM_INT", seq=seq, x=141265000 + seq * 100,
+                        y=1210768000, z=5.0))
+    asked = len(svc._conn.mav.item_requests)
+    svc._handle(Msg("MISSION_COUNT", count=3, opaque_id=0xBEEF))
+    assert len(svc._conn.mav.item_requests) == asked
+
+    svc._handle(Msg("MISSION_COUNT", count=3, opaque_id=0xCAFE))
+    assert len(svc._conn.mav.item_requests) == asked + 3
+
+
+def test_a_changed_checksum_in_mission_current_re_reads_at_once(svc):
+    svc._handle(Msg("MISSION_COUNT", count=3, opaque_id=0xBEEF))
+    svc._mission_asked_at -= telemetry_mod.MISSION_REREAD_DELAY_S + 1
+    before = svc._conn.mav.mission_list_requests
+    svc._handle(Msg("MISSION_CURRENT", seq=0, total=2, mission_id=0xBEEF))
+    assert svc._conn.mav.mission_list_requests == before, \
+        "same mission; and `total` excludes home, so 2 vs 3 is not a change"
+    svc._handle(Msg("MISSION_CURRENT", seq=0, total=2, mission_id=0xCAFE))
+    assert svc._conn.mav.mission_list_requests == before + 1

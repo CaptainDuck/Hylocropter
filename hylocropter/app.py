@@ -262,9 +262,9 @@ def page_map():
         **_shell())
 
 
-@app.route("/new-flight")
-def page_new_flight():
-    snap = tel.snapshot()
+def _preflight(snap):
+    """The pre-flight checks and the mission estimate, for the page and its
+    refresh alike."""
     storage = device.storage()
     probe = cam.probe()
     gps = snap["gps"]
@@ -304,6 +304,27 @@ def page_new_flight():
         legs = max(1, mission["count"] - 1)
         est_photos = int(legs * mission["line_spacing_m"]
                          / max(1, config.get("trigger_distance_m")))
+    return checks, storage, est_photos
+
+
+@app.route("/new-flight/preflight")
+def page_preflight():
+    """Just the checks and the mission card, re-rendered.
+
+    The New flight page polls this, so a mission uploaded from the ground
+    station, a GPS fix arriving or the drone connecting shows up by itself
+    instead of needing a reload -- or, as it used to, a reboot of the Pi.
+    """
+    snap = tel.snapshot()
+    checks, _storage, est_photos = _preflight(snap)
+    return render_template("_partials/preflight.html", checks=checks,
+                           est_photos=est_photos, telemetry=snap)
+
+
+@app.route("/new-flight")
+def page_new_flight():
+    snap = tel.snapshot()
+    checks, storage, est_photos = _preflight(snap)
     # The planner scales everything to one drawn block, not to the whole
     # downloaded vicinity -- that is tens of hectares of imagery to search in, and
     # planning a mission over all of it would suggest an hour in the air for

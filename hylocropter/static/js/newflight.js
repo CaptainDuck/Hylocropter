@@ -119,6 +119,27 @@
     });
   }
 
+  /* ── pre-flight card, kept current ───────────────────────────────────────── */
+  // The checks and the mission card are re-rendered by the server every few
+  // seconds, so uploading a new mission from the ground station, or the GPS
+  // getting its fix, shows up here without a reload. Swapped only when the
+  // markup actually changed, so nothing flickers while it stays the same.
+
+  const preflight = document.getElementById('preflight');
+  if (preflight && preflight.dataset.refresh) {
+    let last = preflight.innerHTML.trim();
+    HC.poll(async function () {
+      const res = await fetch(preflight.dataset.refresh, { cache: 'no-store' });
+      if (!res.ok) throw new Error('preflight ' + res.status);
+      const html = (await res.text()).trim();
+      if (html !== last) {
+        preflight.innerHTML = html;
+        last = html;
+      }
+      return true;
+    }, 5000);
+  }
+
   /* ── live telemetry while armed ──────────────────────────────────────────── */
 
   if (recording) {

@@ -532,3 +532,38 @@ def test_the_map_offers_live_location(client):
     page = client.get("/").get_data(as_text=True)
     assert 'id="map-live"' in page and 'id="map-me"' in page
     assert "data-https-port" in page
+
+
+# ── the secure address ───────────────────────────────────────────────────────
+
+@pytest.fixture
+def https_up(monkeypatch):
+    import tls
+    monkeypatch.setitem(tls._state, "running", True)
+    monkeypatch.setitem(tls._state, "port", 5443)
+
+
+def test_the_name_is_sent_to_the_https_address(client, https_up):
+    res = client.get("/history?q=farm", base_url="http://hylocropter.local:5000")
+    assert res.status_code == 302, "temporary, so a broken https is not remembered"
+    assert res.headers["Location"] == "https://hylocropter.local:5443/history?q=farm"
+    bare = client.get("/", base_url="http://hylocropter.local:5000")
+    assert bare.headers["Location"] == "https://hylocropter.local:5443/"
+
+
+def test_the_ip_address_stays_plain_http(client, https_up):
+    """The fallback for phones that cannot resolve .local names."""
+    assert client.get("/", base_url="http://10.142.48.244:5000").status_code == 200
+
+
+def test_nothing_is_redirected_while_https_is_down(client, monkeypatch):
+    import tls
+    monkeypatch.setitem(tls._state, "running", False)
+    assert client.get("/", base_url="http://hylocropter.local:5000").status_code == 200
+
+
+def test_writes_are_not_redirected(client, https_up):
+    """A redirected POST turns into a GET in most clients and loses its body."""
+    res = client.patch("/api/settings", json={},
+                       base_url="http://hylocropter.local:5000")
+    assert res.status_code == 200

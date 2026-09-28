@@ -51,7 +51,7 @@ python hylocropter/app.py --debug                    # Flask reloader on
 
 ```bash
 pip install -r hylocropter/requirements-dev.txt
-pytest                            # 316 tests, from the repo root or anywhere
+pytest                            # 320 tests, from the repo root or anywhere
 pytest hylocropter/tests/test_index.py -v
 ```
 
@@ -159,7 +159,9 @@ the memory on a Pi 4.
 - **`tls.py`** — a second, **https** copy of the dashboard (port 5443, self-signed
   cert made by `openssl` on first run in `hylocropter_data/tls/`). Exists only
   because browsers refuse to share the device's location with plain http, which
-  the map's "This device" dot needs. The http address is unchanged.
+  the map's "This device" dot needs. Plain-http GETs to `hylocropter.local`
+  are 302-redirected to it (only that name — the IP address stays http, the
+  fallback for Android phones that can't resolve `.local`).
 - **`applog.py`** — logging to a rotating file plus an in-memory ring the UI reads.
 - **`app.py`** — routes only. Keep it thin.
 

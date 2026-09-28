@@ -217,6 +217,28 @@ def _blocks_with_dims():
     return out
 
 
+# ── the secure address ───────────────────────────────────────────────────────
+
+# The name people type. Visiting it over plain http is sent to the https copy,
+# so the map's "This device" location works without having to know about a
+# second address. Only this name: the IP address and localhost stay plain http,
+# which is the fallback when a phone cannot resolve .local names at all.
+SECURE_NAME = "hylocropter.local"
+
+
+@app.before_request
+def _send_the_name_to_https():
+    https = tls_mod.status()
+    if (request.is_secure or not https["running"]
+            or request.method not in ("GET", "HEAD")
+            or request.host.split(":")[0].lower() != SECURE_NAME):
+        return None
+    # 302, not 301: browsers keep a permanent redirect forever, so if the https
+    # copy ever failed to start, this name would stay pointed at nothing.
+    target = f"https://{SECURE_NAME}:{https['port']}{request.full_path}"
+    return redirect(target.rstrip("?"), code=302)
+
+
 # ── pages ────────────────────────────────────────────────────────────────────
 
 @app.route("/")

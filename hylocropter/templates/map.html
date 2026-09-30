@@ -87,8 +87,12 @@
 
     <div class="card elev-sm">
       <span class="card-kicker">Compared with last time</span>
+      {# No comparison until both flights have a reading: the newest flight has
+         no stats while it is still processing, and comparing None used to take
+         the whole map page down for the length of the processing. #}
       {% set diff = (flight.stats.mean - previous.stats.mean)
-                    if (previous and flight.stats) else none %}
+                    if (previous and flight.stats and flight.stats.mean is not none
+                        and previous.stats.mean is not none) else none %}
       <div style="display:flex;align-items:baseline;gap:9px">
         <span class="delta-arrow" style="color:{{
           'var(--stress-healthy)' if diff and diff > 0.02
@@ -96,7 +100,8 @@
           else 'var(--color-neutral-700)') }}">{{
           '↑' if diff and diff > 0.02 else ('↓' if diff and diff < -0.02 else '→') }}</span>
         <span style="font-size:15px;line-height:1.35">{% if not previous %}This is
-          the first flight on record.{% elif diff > 0.02 %}Better than the flight
+          the first flight on record.{% elif diff is none %}Nothing to compare yet —
+          this flight's photos are still being processed.{% elif diff > 0.02 %}Better than the flight
           before — more of the block is reading healthy.{% elif diff < -0.02 %}Worse
           than the flight before — more weak spots than last time.{% else %}About the
           same as the flight before.{% endif %}</span>

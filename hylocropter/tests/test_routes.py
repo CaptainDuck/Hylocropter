@@ -572,3 +572,23 @@ def test_writes_are_not_redirected(client, https_up):
 def test_settings_offers_the_camera_turn(client):
     page = client.get("/settings").get_data(as_text=True)
     assert 'data-setting="camera_rotation_deg"' in page
+
+
+def test_the_map_survives_the_newest_flight_still_processing(client):
+    """The newest flight has no reading until processing finishes. Comparing
+    it with the one before took the map page down for the whole ~20 minutes."""
+    store = app_mod.store
+    older = store.open_flight(name="earlier")
+    store.update_flight(older["id"], {"status": "ok",
+                                      "started_at": "2026-01-01T09:00:00", "stats": {
+        "mean": 0.41, "healthy_pct": 80.0, "moderate_pct": 15.0,
+        "stressed_pct": 5.0}})
+    newest = store.open_flight(name="still processing")
+    store.update_flight(newest["id"], {"status": "processing", "stats": None})
+    try:
+        res = client.get(f"/?flight={newest['id']}")
+        assert res.status_code == 200, res.data[-600:]
+        assert "still being processed" in res.get_data(as_text=True)
+    finally:
+        store.delete_flight(newest["id"])
+        store.delete_flight(older["id"])

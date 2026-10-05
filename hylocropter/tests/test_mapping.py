@@ -557,6 +557,45 @@ def test_summary_always_offers_something_to_do():
         assert s["advice"] and s["plain"] and s["headline"]
 
 
+# ── compared with last time ──────────────────────────────────────────────────
+#
+# The verdict talks about weak spots, so it must be judged on weak spots. It used
+# to compare mean BNDVI, which a change of exposure or k moves by itself -- and on
+# real flights it said "more weak spots" about a flight that had fewer.
+
+def _flight(moderate, stressed, mean=0.4):
+    return {"stats": {"mean": mean, "healthy_pct": 100.0 - moderate - stressed,
+                      "moderate_pct": moderate, "stressed_pct": stressed}}
+
+
+def test_fewer_weak_spots_is_better_even_if_the_mean_fell():
+    # F-20260930-1109: weak spots 0.65% -> 0.02%, mean 0.461 -> 0.417.
+    # With the dead-band that small a move is "same"; widen it apart to check
+    # the direction, then check a clear improvement.
+    now, before = _flight(0.02, 0.0, mean=0.417), _flight(0.6, 0.05, mean=0.461)
+    assert flights.compare_flights(now, before, deadband=0.1)["direction"] == "better"
+    v = flights.compare_flights(_flight(3, 1, mean=0.30), _flight(10, 5, mean=0.45))
+    assert v["direction"] == "better" and "fewer weak spots" in v["message"]
+
+
+def test_more_weak_spots_is_worse_even_if_the_mean_rose():
+    v = flights.compare_flights(_flight(10, 5, mean=0.50), _flight(3, 1, mean=0.30))
+    assert v["direction"] == "worse" and "more weak spots" in v["message"]
+
+
+def test_a_small_swing_is_about_the_same():
+    v = flights.compare_flights(_flight(5.4, 0.5), _flight(5.0, 0.3))
+    assert v["direction"] == "same" and v["message"].startswith("About the same")
+
+
+def test_the_comparison_survives_missing_readings():
+    assert flights.compare_flights(_flight(1, 1), None)["direction"] == "first"
+    assert flights.compare_flights({"stats": None}, _flight(1, 1))["direction"] == "pending"
+    assert flights.compare_flights(_flight(1, 1), {"stats": None})["direction"] == "unknown"
+    legacy = {"stats": {"mean": 0.4}}      # predates the healthy/moderate split
+    assert flights.compare_flights(_flight(1, 1), legacy)["direction"] == "unknown"
+
+
 # ── captures that measured nothing ───────────────────────────────────────────
 #
 # A capture whose every pixel fell below the signal floor stores a mean of None.

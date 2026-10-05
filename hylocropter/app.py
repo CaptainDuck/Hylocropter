@@ -298,6 +298,7 @@ def page_map():
     return render_template(
         "map.html", view="map", flight=flight, flights=all_flights,
         captures=captures, pins=pins, summary=summary, previous=previous,
+        comparison=flights_mod.compare_flights(flight, previous) if flight else None,
         trend=[f for f in finished if f.get("stats")][:6][::-1],
         ground_captures=store.ground_captures(),
         **_shell())

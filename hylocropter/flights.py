@@ -1135,6 +1135,61 @@ def mission_plan(altitude_m, fov_h_deg=62.2, fov_v_deg=48.8,
     }
 
 
+# How far the weak-spot share has to move, in percentage points, before the map
+# calls a flight better or worse than the one before. Smaller swings are the
+# noise of a different light, exposure or path over the same block.
+COMPARE_DEADBAND_PCT = 1.0
+
+
+def weak_pct(stats):
+    """Share of a flight's ground reading moderate or stressed -- the weak spots.
+
+    None when the flight has no reading yet, or predates the split.
+    """
+    if not stats:
+        return None
+    moderate, stressed = stats.get("moderate_pct"), stats.get("stressed_pct")
+    if moderate is None or stressed is None:
+        return None
+    return moderate + stressed
+
+
+def compare_flights(flight, previous, deadband=COMPARE_DEADBAND_PCT):
+    """The "Compared with last time" verdict: is the block doing better?
+
+    Judged on the weak-spot share, because that is what the sentence talks
+    about. It used to compare mean BNDVI, which a change of exposure or leak
+    ``k`` moves on its own -- so it could say "more weak spots" about a flight
+    that had fewer. Returns ``{"direction", "message"}``; direction is one of
+    better, worse, same, first, pending or unknown.
+    """
+    if not previous:
+        return {"direction": "first",
+                "message": "This is the first flight on record."}
+    now = weak_pct((flight or {}).get("stats"))
+    if now is None:
+        return {"direction": "pending",
+                "message": "Nothing to compare yet — this flight's photos are "
+                           "still being processed."}
+    before = weak_pct(previous.get("stats"))
+    if before is None:
+        return {"direction": "unknown",
+                "message": "Can't compare — the flight before has no weak-spot "
+                           "reading."}
+    figures = f"{now:.1f}% of the block, {{}} {before:.1f}% last time."
+    if now < before - deadband:
+        return {"direction": "better",
+                "message": "Better than the flight before — fewer weak spots: "
+                           + figures.format("down from")}
+    if now > before + deadband:
+        return {"direction": "worse",
+                "message": "Worse than the flight before — more weak spots: "
+                           + figures.format("up from")}
+    return {"direction": "same",
+            "message": "About the same as the flight before — weak spots on "
+                       + figures.format("against")}
+
+
 def summarise(mean, stressed_pct, has_gps=True):
     """Plain-language summary, in the mockup's voice.
 

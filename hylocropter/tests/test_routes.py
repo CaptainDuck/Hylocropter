@@ -592,3 +592,27 @@ def test_the_map_survives_the_newest_flight_still_processing(client):
     finally:
         store.delete_flight(newest["id"])
         store.delete_flight(older["id"])
+
+
+def test_the_comparison_follows_weak_spots_not_the_mean(client):
+    """A higher mean with more weak spots is worse, not better -- the card used to
+    say "more of the block is reading healthy" when it was reading less so."""
+    store = app_mod.store
+    older = store.open_flight(name="earlier")
+    store.update_flight(older["id"], {"status": "ok",
+                                      "started_at": "2026-01-01T09:00:00", "stats": {
+        "mean": 0.30, "healthy_pct": 95.0, "moderate_pct": 4.0,
+        "stressed_pct": 1.0}})
+    newest = store.open_flight(name="later")
+    store.update_flight(newest["id"], {"status": "ok",
+                                       "started_at": "2026-01-02T09:00:00", "stats": {
+        "mean": 0.45, "healthy_pct": 85.0, "moderate_pct": 10.0,
+        "stressed_pct": 5.0}})
+    try:
+        page = client.get(f"/?flight={newest['id']}").get_data(as_text=True)
+        assert "Worse than the flight before" in page
+        assert "15.0% of the block, up from 5.0%" in page
+        assert "more of the block is reading healthy" not in page
+    finally:
+        store.delete_flight(newest["id"])
+        store.delete_flight(older["id"])

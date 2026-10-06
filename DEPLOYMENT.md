@@ -97,6 +97,44 @@ hotspot.
 > web page served over that same network is a good way to lock yourself out in a
 > field.
 
+### Wi-Fi you can fix from a Mac, and a fallback hotspot
+
+On 2026-10-06 the Pi's only saved network turned out to be a **0-byte file**. The
+battery was pulled shortly after the profile was rewritten, so ext4 never wrote
+its contents. With no saved network and no monitor at the farm, the only way back
+was the SD card. `hylocropter/deploy/` exists so that never happens again:
+
+```bash
+sudo sh hylocropter/deploy/install-wifi.sh     # once, on the Pi
+```
+
+- **`/boot/firmware/hylocropter-wifi.txt`** lists the networks to join as
+  `ssid=` / `password=` pairs. It lives on the FAT boot partition, so any
+  computer can edit it: put the card in the Mac, open `bootfs`, change the file,
+  then eject. Save it as **plain text**; TextEdit's rich text is refused. The
+  installer seeds it from whatever network the Pi is on.
+- **`hylocropter-wifi.service`** runs *before* NetworkManager on every boot. It
+  turns that file into `/etc/NetworkManager/system-connections/hylocropter-wifi-*`
+  using fsync + rename, so a profile emptied by a power cut is rewritten on the
+  next boot. It only touches its own files; networks joined from the desktop stay
+  untouched.
+- **`hylocropter-wifi-fallback.service`** watches `wlan0`. After
+  `hotspot_after` seconds (default 60) with no connection, it brings up an
+  **open** network called **Hylocropter**. Join it and open
+  `http://10.42.0.1:5000/`; SSH works on that address too. It stays on until the
+  next reboot, so whoever just joined is not kicked off. To use the phone hotspot
+  again, turn it on and reboot the Pi.
+
+The hotspot is open by choice: a password could not be recovered at the farm
+either. SSH still needs the key or the login password. To give the hotspot a
+password, set `hotspot_password=` (8+ characters).
+
+Logs are in `journalctl -u hylocropter-wifi -u hylocropter-wifi-fallback`.
+
+**Still shut down before unplugging** (`sudo poweroff`, or the dashboard's Shut
+down). This makes a wiped profile recoverable; it does not make power cuts safe
+for everything else on the card.
+
 ## 4. The two privileged actions
 
 "Shut down the Pi" and "Copy all flights to a USB stick" need more than the app

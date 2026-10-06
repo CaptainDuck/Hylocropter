@@ -1,0 +1,15 @@
+[Unit]
+Description=Hylocropter: Wi-Fi networks from /boot/firmware/hylocropter-wifi.txt
+# Write the profiles before NetworkManager reads them, so the first connection
+# attempt already has them -- including one that a power cut emptied.
+Before=NetworkManager.service
+After=local-fs.target
+RequiresMountsFor=/boot/firmware /etc/NetworkManager
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/sbin/hylocropter-wifi apply
+
+[Install]
+WantedBy=multi-user.target

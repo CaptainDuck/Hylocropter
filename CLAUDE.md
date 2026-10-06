@@ -51,7 +51,7 @@ python hylocropter/app.py --debug                    # Flask reloader on
 
 ```bash
 pip install -r hylocropter/requirements-dev.txt
-pytest                            # 330 tests, from the repo root or anywhere
+pytest                            # 341 tests, from the repo root or anywhere
 pytest hylocropter/tests/test_index.py -v
 ```
 
@@ -69,6 +69,9 @@ pytest hylocropter/tests/test_index.py -v
 - `test_store.py` — the JSON indexes, concurrent writes, legacy migration,
   settings clamping, and the survey blocks: validation, de-duplication, and
   migrating the old single square into one.
+- `test_wifi.py` — `deploy/hylocropter_wifi.py`, the Wi-Fi recovery service: the
+  boot-partition file parses forgivingly, a bad file never wipes working
+  profiles, an emptied profile is rewritten, and only its own files are touched.
 - `test_routes.py` — every page renders with no camera and no drone. Imports
   `app.py`, so it sets `HYLOCROPTER_DATA` to a scratch directory first; **never
   point that at real data.**

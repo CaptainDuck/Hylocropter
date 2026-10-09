@@ -16,6 +16,7 @@ pin. All of them are about one property: the preview thread must always come
 back and release its lock, whatever the hardware does.
 """
 
+import sys
 import threading
 import time
 
@@ -288,3 +289,22 @@ def test_a_one_off_capture_is_refused_while_a_flight_holds_the_camera(held):
     finally:
         svc.end_flight()
     assert svc.capture_locked(lambda: "photo") == (True, "photo")
+
+
+def test_opening_the_camera_does_not_leave_a_dead_tuning_file_behind(monkeypatch):
+    """picamera2 points LIBCAMERA_RPI_TUNING_FILE at a temp file it deletes once
+    the camera is open. Left set, the next probe after a flight found no camera."""
+    import os
+    import types
+
+    class FakePicamera2:
+        def __init__(self, tuning=None):
+            os.environ["LIBCAMERA_RPI_TUNING_FILE"] = "/tmp/already-deleted"
+
+    monkeypatch.setitem(sys.modules, "picamera2",
+                        types.SimpleNamespace(Picamera2=FakePicamera2))
+    monkeypatch.setattr(camera_mod.bndvi, "neutral_tuning", lambda: {"x": 1})
+    monkeypatch.delenv("LIBCAMERA_RPI_TUNING_FILE", raising=False)
+    camera_mod.bndvi.open_camera(neutralise_isp=True)
+    assert "LIBCAMERA_RPI_TUNING_FILE" not in os.environ
+

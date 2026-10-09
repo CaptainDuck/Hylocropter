@@ -64,6 +64,7 @@ Module usage
 
 import datetime
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -465,6 +466,13 @@ def open_camera(neutralise_isp=True):
                 return Picamera2(tuning=tuning)
             except Exception:
                 pass
+            finally:
+                # Picamera2 writes a dict tuning to a temp file, points this
+                # variable at it, and deletes the file once the camera is open --
+                # but leaves the variable set. The next camera manager (the
+                # status probe, after a flight lets go of the camera) then fails
+                # to load the missing file and reports no camera at all.
+                os.environ.pop("LIBCAMERA_RPI_TUNING_FILE", None)
     return Picamera2()
 
 

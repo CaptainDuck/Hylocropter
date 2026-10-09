@@ -31,6 +31,10 @@ DEFAULT_PORT = 5443
 NAMES = ["DNS:hylocropter.local", "DNS:hylocropter", "DNS:localhost",
          "IP:127.0.0.1", "IP:10.42.0.1"]
 
+# How long a connection may sit silent -- mid-handshake, or idle between
+# requests -- before it is dropped and its thread freed.
+IDLE_TIMEOUT_S = 30
+
 # Phones refuse to trust certificates valid for longer than 825 days, even ones
 # you install by hand, so stay under it.
 VALID_DAYS = 825
@@ -68,9 +72,23 @@ def start(app, host, port, tls_dir):
         return status()
     try:
         cert, key = ensure_cert(tls_dir)
-        from werkzeug.serving import make_server
+        from werkzeug.serving import (WSGIRequestHandler, load_ssl_context,
+                                      make_server)
+
+        class Handler(WSGIRequestHandler):
+            timeout = IDLE_TIMEOUT_S        # applied to each connection's socket
+
         server = make_server(host, port, app, threaded=True,
-                             ssl_context=(str(cert), str(key)))
+                             request_handler=Handler)
+        # Wrap the socket ourselves rather than passing ssl_context, which
+        # handshakes inside accept() -- on the one thread that accepts for
+        # everybody, with no timeout. One phone that opened a connection and
+        # went quiet hung the https copy for everyone until a restart. Deferred,
+        # the handshake runs on that connection's own thread, under its timeout.
+        ctx = load_ssl_context(str(cert), str(key))
+        server.socket = ctx.wrap_socket(server.socket, server_side=True,
+                                        do_handshake_on_connect=False)
+        server.ssl_context = ctx            # what makes werkzeug say "https"
     except Exception as exc:
         _state.update(running=False, port=None, error=str(exc))
         log.warning("https copy of the dashboard did not start: %s", exc)

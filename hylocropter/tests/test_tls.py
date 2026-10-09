@@ -38,6 +38,29 @@ def test_the_dashboard_answers_over_https(tmp_path):
     assert body == b"hello"
 
 
+@needs_openssl
+def test_one_silent_connection_does_not_lock_everyone_out(tmp_path):
+    """A phone that opens a connection and never says hello used to hang the
+    whole https copy: the handshake ran inside the accept loop with no timeout,
+    so nobody else's connection was ever accepted until a restart."""
+    import socket
+    from flask import Flask
+    app = Flask("t")
+    app.add_url_rule("/", "i", lambda: "hello")
+    state = tls.start(app, "127.0.0.1", _free_port(), tmp_path)
+    assert state["running"], state
+    silent = socket.create_connection(("127.0.0.1", state["port"]))
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        body = urllib.request.urlopen(f"https://127.0.0.1:{state['port']}/",
+                                      context=ctx, timeout=5).read()
+        assert body == b"hello"
+    finally:
+        silent.close()
+
+
 def test_a_missing_openssl_is_reported_not_raised(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise FileNotFoundError("openssl")

@@ -91,7 +91,15 @@
       titleEl.textContent = 'Nothing to process';
       bodyEl.textContent = 'No flight is waiting to be worked on.';
       HC.$$('.proc-step').forEach(function (s) { s.hidden = true; });
-      footerEl.textContent = '';
+      footerEl.textContent = 'This page starts by itself when a flight lands.';
+      // Opened before the flight landed: keep an eye out, slowly, and start
+      // over with the steps showing once it does.
+      HC.poll(function () {
+        return HC.api('/api/processing').then(function (q) {
+          if (q.running) { window.location.reload(); return false; }
+          return true;
+        });
+      }, 3000, { runHidden: true });
       return false;
     }
     return true;

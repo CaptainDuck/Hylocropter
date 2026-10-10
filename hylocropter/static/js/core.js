@@ -235,6 +235,83 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   HC.poll(function () {
-    return HC.api('/api/telemetry').then(paint);
+    return HC.api('/api/telemetry').then(function (snap) {
+      paint(snap);
+      follow(snap);
+    });
   }, 3000);
+
+  /* ── follow the flight ──────────────────────────────────────────────────
+     A flight opens by itself when the drone arms, whether or not anyone
+     pressed "Get the camera ready", and its photos are processed by
+     themselves after it disarms. Whatever page is open goes to the flight
+     page, then to the progress screen -- once per flight and stage, so going
+     back to the map on purpose is not undone three seconds later. Pages where
+     you might be in the middle of something get the banner instead. */
+  const view = document.body.dataset.view;
+  const STAY = { debug: true, setup: true, settings: true };
+  const banner = HC.$('#flight-banner');
+  const seen = {};             // used when sessionStorage is unavailable
+
+  function firstTime(key) {
+    key = 'hc-follow:' + key;
+    try {
+      if (sessionStorage.getItem(key)) return false;
+      sessionStorage.setItem(key, '1');
+      return true;
+    } catch (e) {
+      if (seen[key]) return false;
+      seen[key] = true;
+      return true;
+    }
+  }
+
+  function stage(snap) {
+    const proc = snap.processing || {};
+    if (proc.running) {
+      return {
+        key: 'processing:' + proc.flight_id, view: 'processing', href: '/processing',
+        title: 'Working on the photos from ' + proc.flight_id,
+        body: proc.total ? proc.done + ' of ' + proc.total + ' photos processed.'
+          : 'The drone has landed; the photos are being worked on.',
+        link: 'See the progress'
+      };
+    }
+    const id = snap.recording_flight;
+    if (!id) return null;
+    const rec = snap.recorder || {};
+    const taken = rec.flight_id === id ? rec.taken : null;
+    const root = HC.$('#newflight-root');
+    return {
+      key: 'flying:' + id, view: 'newflight', href: '/new-flight',
+      // The flight page only shows the live flight if it was rendered after
+      // the flight opened; one left open from before needs reloading.
+      here: !!root && root.dataset.recording === id,
+      title: 'Recording ' + id,
+      body: 'A flight is in progress' +
+        (taken != null ? ' — ' + taken + ' photos so far.' : '.'),
+      link: 'Open the flight page'
+    };
+  }
+
+  function follow(snap) {
+    const s = stage(snap);
+    const here = s && (s.here !== undefined ? s.here : view === s.view);
+    if (!s || here) {
+      if (s) firstTime(s.key);  // already watching: don't pull back later
+      if (banner) banner.hidden = true;
+      return;
+    }
+    if (!STAY[view] && firstTime(s.key)) {
+      window.location.href = s.href;
+      return;
+    }
+    if (!banner) return;
+    HC.$('#flight-banner-title').textContent = s.title;
+    HC.$('#flight-banner-body').textContent = s.body;
+    const link = HC.$('#flight-banner-link');
+    link.textContent = s.link;
+    link.href = s.href;
+    banner.hidden = false;
+  }
 });

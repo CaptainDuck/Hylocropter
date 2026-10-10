@@ -616,3 +616,33 @@ def test_the_comparison_follows_weak_spots_not_the_mean(client):
     finally:
         store.delete_flight(newest["id"])
         store.delete_flight(older["id"])
+
+
+def test_every_page_can_tell_when_photos_are_being_processed(client):
+    """The header poll is how any open page follows a landed flight to the
+    progress screen, so the telemetry it reads has to say so."""
+    proc = client.get("/api/telemetry").get_json()["processing"]
+    assert set(proc) == {"running", "flight_id", "done", "total"}
+
+
+def test_the_flight_banner_is_on_every_page_ready_to_show(client):
+    """core.js fills and shows it when a flight starts or lands while a page is
+    open; with no flight going it is there, but hidden."""
+    for path in ("/", "/history", "/settings", "/debug"):
+        page = client.get(path).get_data(as_text=True)
+        assert 'id="flight-banner"' in page, path
+        assert 'data-view="' in page, path
+    banner = client.get("/history").get_data(as_text=True).split('id="flight-banner"')[1]
+    assert banner.split(">")[0].strip().endswith("hidden"), "hidden with no flight"
+
+
+def test_the_flight_banner_shows_while_recording(client):
+    store = app_mod.store
+    flight = store.open_flight(name="in the air")
+    try:
+        page = client.get("/history").get_data(as_text=True)
+        tag = page.split('id="flight-banner"')[1].split(">")[0]
+        assert "hidden" not in tag
+        assert f"Recording {flight['id']}" in page
+    finally:
+        store.delete_flight(flight["id"])

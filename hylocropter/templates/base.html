@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
 {% block head %}{% endblock %}
 </head>
-<body>
+<body data-view="{{ view }}">
 <div class="shell">
 
   <header class="topbar hc-noprint">
@@ -106,18 +106,20 @@
       </div>
     {% endif %}
 
-    {% if recording and view != 'newflight' %}
-      <div class="banner hc-noprint" style="background:var(--color-accent-2-100);border-color:var(--color-accent-2-300)">
-        <span class="banner-mark" style="color:var(--color-accent-2-800)" aria-hidden="true">●</span>
-        <div>
-          <div class="banner-title">Recording {{ recording.id }}</div>
-          <div class="banner-body" style="color:var(--color-accent-2-800)">
-            A flight is in progress — {{ recording.capture_count }} photos so far.
-            <a href="{{ url_for('page_new_flight') }}">Open the flight page</a>.
-          </div>
+    {# Kept up to date by core.js: a flight starting, or its photos being
+       processed, shows here on pages that don't jump to it by themselves. #}
+    <div class="banner hc-noprint" id="flight-banner"
+         style="background:var(--color-accent-2-100);border-color:var(--color-accent-2-300)"
+         {% if not (recording and view != 'newflight') %}hidden{% endif %}>
+      <span class="banner-mark" style="color:var(--color-accent-2-800)" aria-hidden="true">●</span>
+      <div>
+        <div class="banner-title" id="flight-banner-title">Recording {{ recording.id if recording }}</div>
+        <div class="banner-body" style="color:var(--color-accent-2-800)">
+          <span id="flight-banner-body">A flight is in progress.</span>
+          <a id="flight-banner-link" href="{{ url_for('page_new_flight') }}">Open the flight page</a>.
         </div>
       </div>
-    {% endif %}
+    </div>
 
     {% block content %}{% endblock %}
   </main>

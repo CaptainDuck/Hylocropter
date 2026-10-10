@@ -725,6 +725,10 @@ def api_telemetry():
     snap["recording_flight"] = (_recording_flight() or {}).get("id")
     snap["camera"] = cam.probe()
     snap["recorder"] = dict(recorder.stats)
+    # So every page can follow a landed flight to the progress screen, not
+    # only the flight page that happened to be open when it disarmed.
+    snap["processing"] = {k: _processing[k]
+                          for k in ("running", "flight_id", "done", "total")}
     return jsonify(snap)
 
 

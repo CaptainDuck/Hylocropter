@@ -646,3 +646,26 @@ def test_the_flight_banner_shows_while_recording(client):
         assert f"Recording {flight['id']}" in page
     finally:
         store.delete_flight(flight["id"])
+
+
+def test_after_landing_the_banner_and_flight_page_lead_to_the_progress(client, monkeypatch):
+    """The flight stays marked recording while its photos are processed. The
+    banner used to keep saying "Recording -- open the flight page", and the
+    flight page kept showing the in-flight view, so the progress screen was
+    only reachable by typing its address."""
+    store = app_mod.store
+    flight = store.open_flight(name="just landed")
+    monkeypatch.setitem(app_mod._processing, "running", True)
+    monkeypatch.setitem(app_mod._processing, "flight_id", flight["id"])
+    try:
+        page = client.get("/history").get_data(as_text=True)
+        banner = page.split('id="flight-banner"')[1].split("</div>\n    </div>")[0]
+        assert "hidden" not in banner.split(">")[0]
+        assert 'href="/processing"' in banner and "See the progress" in banner
+        res = client.get("/new-flight")
+        assert res.status_code == 302 and res.location.endswith("/processing")
+        page = client.get("/processing").get_data(as_text=True)
+        tag = page.split('id="flight-banner"')[1].split(">")[0]
+        assert "hidden" in tag, "not on the page that already shows it"
+    finally:
+        store.delete_flight(flight["id"])

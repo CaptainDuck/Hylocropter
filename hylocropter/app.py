@@ -202,6 +202,7 @@ def _shell():
         "banner": banner,
         "dev_mode": app.config["DEV_MODE"],
         "recording": _recording_flight(),
+        "processing": dict(_processing),
         # The drawn blocks, with their real dimensions worked out, plus just the
         # names for the All flights filter. Both derived rather than stored, so
         # renaming a block on the map updates the filter with nothing to sync.
@@ -365,6 +366,11 @@ def page_preflight():
 
 @app.route("/new-flight")
 def page_new_flight():
+    # After landing the flight stays marked recording until its photos are
+    # processed, so this page would still show the in-flight view. The
+    # progress is what there is to see by then.
+    if _processing["running"]:
+        return redirect(url_for("page_processing"))
     snap = tel.snapshot()
     checks, storage, est_photos = _preflight(snap)
     # The planner scales everything to one drawn block, not to the whole

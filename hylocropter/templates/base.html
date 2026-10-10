@@ -108,15 +108,26 @@
 
     {# Kept up to date by core.js: a flight starting, or its photos being
        processed, shows here on pages that don't jump to it by themselves. #}
+    {% if processing.running %}
+      {% set fb = {"show": view != 'processing',
+                   "title": "Working on the photos from " ~ processing.flight_id,
+                   "body": "The drone has landed; the photos are being worked on.",
+                   "link": "See the progress", "href": url_for('page_processing')} %}
+    {% else %}
+      {% set fb = {"show": recording and view != 'newflight',
+                   "title": "Recording " ~ (recording.id if recording else ''),
+                   "body": "A flight is in progress.",
+                   "link": "Open the flight page", "href": url_for('page_new_flight')} %}
+    {% endif %}
     <div class="banner hc-noprint" id="flight-banner"
          style="background:var(--color-accent-2-100);border-color:var(--color-accent-2-300)"
-         {% if not (recording and view != 'newflight') %}hidden{% endif %}>
+         {% if not fb.show %}hidden{% endif %}>
       <span class="banner-mark" style="color:var(--color-accent-2-800)" aria-hidden="true">●</span>
       <div>
-        <div class="banner-title" id="flight-banner-title">Recording {{ recording.id if recording }}</div>
+        <div class="banner-title" id="flight-banner-title">{{ fb.title }}</div>
         <div class="banner-body" style="color:var(--color-accent-2-800)">
-          <span id="flight-banner-body">A flight is in progress.</span>
-          <a id="flight-banner-link" href="{{ url_for('page_new_flight') }}">Open the flight page</a>.
+          <span id="flight-banner-body">{{ fb.body }}</span>
+          <a id="flight-banner-link" href="{{ fb.href }}">{{ fb.link }}</a>.
         </div>
       </div>
     </div>

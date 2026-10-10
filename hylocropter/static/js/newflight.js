@@ -142,6 +142,18 @@
 
   /* ── live telemetry while armed ──────────────────────────────────────────── */
 
+  // A flight opens by itself when the drone arms, "Get the camera ready" or
+  // not. If this page was opened before that, it is still showing the
+  // pre-flight checklist: reload into the live view of the flight.
+  if (!recording) {
+    HC.poll(function () {
+      return HC.api('/api/telemetry').then(function (snap) {
+        if (snap.recording_flight) { location.reload(); return false; }
+        return true;
+      });
+    }, 3000);
+  }
+
   if (recording) {
     let wasArmed = null;
     HC.poll(function () {
@@ -175,7 +187,11 @@
         }
         wasArmed = snap.armed;
 
-        if (!snap.recording_flight) {
+        // The flight stays marked recording while its photos are processed,
+        // so landing shows up here as processing having started -- whether or
+        // not this page was open to see the drone disarm.
+        const proc = snap.processing || {};
+        if (!snap.recording_flight || (proc.running && proc.flight_id === recording)) {
           window.location.href = '/processing';
           return false;
         }

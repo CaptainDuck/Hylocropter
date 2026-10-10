@@ -237,76 +237,48 @@ document.addEventListener('DOMContentLoaded', function () {
   HC.poll(function () {
     return HC.api('/api/telemetry').then(function (snap) {
       paint(snap);
-      follow(snap);
+      paintFlightBanner(snap);
     });
   }, 3000);
 
-  /* ── follow the flight ──────────────────────────────────────────────────
+  /* ── flight banner ──────────────────────────────────────────────────────
      A flight opens by itself when the drone arms, whether or not anyone
      pressed "Get the camera ready", and its photos are processed by
-     themselves after it disarms. Whatever page is open goes to the flight
-     page, then to the progress screen -- once per flight and stage, so going
-     back to the map on purpose is not undone three seconds later. Pages where
-     you might be in the middle of something get the banner instead. */
+     themselves after it disarms. The banner says which of the two is going on
+     and links to the page that shows it. It never navigates by itself. While
+     the photos are processing the flight is still marked recording, so the
+     processing check has to come first or the link points at the flight page. */
   const view = document.body.dataset.view;
-  const STAY = { debug: true, setup: true, settings: true };
   const banner = HC.$('#flight-banner');
-  const seen = {};             // used when sessionStorage is unavailable
 
-  function firstTime(key) {
-    key = 'hc-follow:' + key;
-    try {
-      if (sessionStorage.getItem(key)) return false;
-      sessionStorage.setItem(key, '1');
-      return true;
-    } catch (e) {
-      if (seen[key]) return false;
-      seen[key] = true;
-      return true;
-    }
-  }
-
-  function stage(snap) {
+  function flightStage(snap) {
     const proc = snap.processing || {};
     if (proc.running) {
       return {
-        key: 'processing:' + proc.flight_id, view: 'processing', href: '/processing',
+        here: view === 'processing',
         title: 'Working on the photos from ' + proc.flight_id,
         body: proc.total ? proc.done + ' of ' + proc.total + ' photos processed.'
           : 'The drone has landed; the photos are being worked on.',
-        link: 'See the progress'
+        link: 'See the progress', href: '/processing'
       };
     }
     const id = snap.recording_flight;
     if (!id) return null;
     const rec = snap.recorder || {};
     const taken = rec.flight_id === id ? rec.taken : null;
-    const root = HC.$('#newflight-root');
     return {
-      key: 'flying:' + id, view: 'newflight', href: '/new-flight',
-      // The flight page only shows the live flight if it was rendered after
-      // the flight opened; one left open from before needs reloading.
-      here: !!root && root.dataset.recording === id,
+      here: view === 'newflight',
       title: 'Recording ' + id,
       body: 'A flight is in progress' +
         (taken != null ? ' — ' + taken + ' photos so far.' : '.'),
-      link: 'Open the flight page'
+      link: 'Open the flight page', href: '/new-flight'
     };
   }
 
-  function follow(snap) {
-    const s = stage(snap);
-    const here = s && (s.here !== undefined ? s.here : view === s.view);
-    if (!s || here) {
-      if (s) firstTime(s.key);  // already watching: don't pull back later
-      if (banner) banner.hidden = true;
-      return;
-    }
-    if (!STAY[view] && firstTime(s.key)) {
-      window.location.href = s.href;
-      return;
-    }
+  function paintFlightBanner(snap) {
     if (!banner) return;
+    const s = flightStage(snap);
+    if (!s || s.here) { banner.hidden = true; return; }
     HC.$('#flight-banner-title').textContent = s.title;
     HC.$('#flight-banner-body').textContent = s.body;
     const link = HC.$('#flight-banner-link');

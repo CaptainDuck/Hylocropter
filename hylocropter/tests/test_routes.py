@@ -669,3 +669,28 @@ def test_after_landing_the_banner_and_flight_page_lead_to_the_progress(client, m
         assert "hidden" in tag, "not on the page that already shows it"
     finally:
         store.delete_flight(flight["id"])
+
+
+def test_a_flight_says_where_its_date_came_from(client):
+    """The Pi has no real-time clock. A flight dated by GPS because the Pi was
+    off says so on the map, and one never checked against GPS is flagged in
+    the list -- a silent wrong date is how 13 October became 10 October."""
+    store = app_mod.store
+    fixed = store.open_flight(name="dated by gps")
+    store.update_flight(fixed["id"], {
+        "status": "ok", "clock": {"source": "gps", "offset_s": 247_740.0}})
+    unsure = store.open_flight(name="never checked")
+    store.update_flight(unsure["id"], {
+        "status": "ok", "clock": {"source": "unsynced", "offset_s": None}})
+    try:
+        page = client.get(f"/?flight={fixed['id']}").get_data(as_text=True)
+        assert "2 d 20 h behind" in page
+        listing = client.get("/history").get_data(as_text=True)
+        assert "date not checked against GPS" in listing
+    finally:
+        store.delete_flight(fixed["id"])
+        store.delete_flight(unsure["id"])
+
+
+def test_telemetry_reports_the_clock(client):
+    assert "source" in client.get("/api/telemetry").get_json()["clock"]

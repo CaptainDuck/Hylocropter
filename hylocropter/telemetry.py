@@ -30,6 +30,8 @@ import logging
 import threading
 import time
 
+import clock as clock_mod
+
 log = logging.getLogger("hylocropter.telemetry")
 
 # No heartbeat for this long and we call the link dead. ArduPilot sends
@@ -92,8 +94,10 @@ def _blank_snapshot():
 class TelemetryService:
     """Background MAVLink reader exposing a single snapshot dict."""
 
-    def __init__(self, settings, on_trigger=None, on_arm_change=None):
+    def __init__(self, settings, on_trigger=None, on_arm_change=None,
+                 clock=None):
         self.settings = settings
+        self.clock = clock or clock_mod.default
         self.on_trigger = on_trigger
         self.on_arm_change = on_arm_change
         self._lock = threading.Lock()
@@ -150,6 +154,7 @@ class TelemetryService:
             snap["mission"] = dict(snap["mission"])
             if snap["position"]:
                 snap["position"] = dict(snap["position"])
+        snap["clock"] = self.clock.status()
 
         if self._last_heartbeat:
             age = time.time() - self._last_heartbeat
@@ -373,6 +378,17 @@ class TelemetryService:
                 "hdop": (round(hdop / 100.0, 2)
                          if hdop not in (None, 65535) else None),
             })
+
+        elif kind == "SYSTEM_TIME":
+            # The Pi has no real-time clock (see clock.py). ArduPilot fills
+            # time_unix_usec from the GPS once the receiver has the time, and
+            # sends 0 before that. Only a 3D fix is trusted: a receiver that
+            # has just started can report a time before it has a solution.
+            # GPS_RAW_INT.time_usec is no use here -- ArduPilot fills it with
+            # time since boot, not UTC.
+            if self._snap["gps"]["fix_type"] >= 3:
+                self.clock.note_gps_time(
+                    getattr(msg, "time_unix_usec", 0) / 1e6)
 
         elif kind == "GLOBAL_POSITION_INT":
             # lat/lon are 1e7-scaled degrees; altitudes are millimetres;

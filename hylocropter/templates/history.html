@@ -56,6 +56,7 @@
                   {{ f.capture_count }} photo{{ '' if f.capture_count == 1 else 's' }}
                   {%- if f.duration_s and f.duration_s >= 60 %} · {{ (f.duration_s // 60) }} min{% endif %}
                   {%- if f.status == 'recording' %} · recording now{% endif %}
+                  {%- if f.clock and f.clock.source == 'unsynced' %} · date not checked against GPS{% endif %}
                 </div>
               </div>
               {% if f.stats %}{{ health_bar(f.stats, small=True) }}{% endif %}

@@ -27,7 +27,6 @@ Dev mode goes through all of it -- synthetic frames are grabbed, queued, written
 and analysed exactly like real ones.
 """
 
-import datetime
 import json
 import logging
 import queue
@@ -124,9 +123,12 @@ class FlightRecorder:
         if triggers is None:
             return False
         self.stats["triggers"] += 1
-        when = datetime.datetime.now()
+        # The store's clock, not the Pi's: it is corrected by GPS time, and the
+        # Pi has no real-time clock (clock.py).
+        when = self.store.clock.now()
         try:
             triggers.put_nowait({"geo": geo, "trigger": trigger, "when": when,
+                                 "clock": self.store.clock.status(),
                                  "number": self.stats["triggers"]})
             return True
         except queue.Full:
@@ -206,6 +208,7 @@ class FlightRecorder:
                 sidecar = {
                     "id": capture_id,
                     "timestamp": job["when"].isoformat(timespec="milliseconds"),
+                    "clock": job.get("clock"),
                     "geo": job["geo"],
                     "trigger": job["trigger"],
                     "synthetic": job["synthetic"],
@@ -257,6 +260,8 @@ def analyse_pending(store, flight_id, progress=None):
                    # The frame is already in hand, so there is no DNG to write.
                    "capture_format": "rgb888"},
                 **camera)
+            if meta.get("clock"):
+                record["clock"] = meta["clock"]
             store.add_capture(record)
             store.attach_capture(flight_id, record["id"])
             frame.unlink(missing_ok=True)

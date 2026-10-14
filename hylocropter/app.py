@@ -36,6 +36,7 @@ from flask import (
 import applog
 import bndvi
 import camera as camera_mod
+import clock as clock_mod
 import flights as flights_mod
 import recorder as recorder_mod
 import settings as settings_mod
@@ -148,6 +149,10 @@ device = system_mod.SystemService(store, cam, tel, config, REPO_ROOT)
 
 
 # ── shared helpers ───────────────────────────────────────────────────────────
+
+# Where a record's date came from: the Pi has no real-time clock (clock.py).
+app.add_template_filter(clock_mod.note, "clock_note")
+
 
 def _json_error(message, status):
     return jsonify({"error": message}), status
@@ -535,6 +540,10 @@ def _do_capture(label=None, notes=None, flight_id=None, geo=None,
 
     def work():
         rgb = None
+        # The trusted clock rather than the Pi's own, which has no real-time
+        # clock behind it (clock.py). With no drone it is the Pi's clock, and
+        # the record says so: clock.source == "unsynced".
+        when = store.clock.now()
         if from_preview:
             # "Save as capture" on the Debug view: analyse the frame already on
             # screen rather than taking a new one, so what you saved is what you
@@ -546,6 +555,8 @@ def _do_capture(label=None, notes=None, flight_id=None, geo=None,
             # that silently filed generated frames as real mission photos.
             dev_mode=app.config["DEV_MODE"] or cam.synthetic_requested(),
             flight_id=flight_id, geo=geo, trigger=trigger, rgb=rgb,
+            capture_id=when.strftime("%Y%m%d_%H%M%S"),
+            timestamp=when.isoformat(timespec="seconds"),
             **analysis, **config.camera_kwargs())
 
     try:
@@ -557,6 +568,7 @@ def _do_capture(label=None, notes=None, flight_id=None, geo=None,
         return False, str(exc)
     if not acquired:
         return False, "another capture is in progress"
+    record["clock"] = store.clock.status()
 
     try:
         store.add_capture(record)

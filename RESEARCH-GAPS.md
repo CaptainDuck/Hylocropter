@@ -471,6 +471,16 @@ flight detection, and capture-on-`CAMERA_TRIGGER`.
 Budget one debugging session for this. Field names and integer scaling (lat/lon are
 1e7-scaled, altitudes are mm) are the usual culprits.
 
+**GPS time.** The Pi has no real-time clock and boots offline on fake-hwclock's last
+saved time; the 13 October flight was filed as `F-20261010-1657` because of it.
+`clock.py` now takes UTC from `SYSTEM_TIME.time_unix_usec` once `GPS_RAW_INT` reports a
+3D fix, and flights and photos are stamped with it when the Pi is more than two minutes
+off. Unverified on hardware: that this ArduPilot build actually streams `SYSTEM_TIME`
+under `MAV_DATA_STREAM_ALL` at 4 Hz, and that `time_unix_usec` is UTC (not 0) once the
+fix is in. On the bench: set the Pi's clock back a day (`sudo date -s ...`), get a fix,
+and check Settings' activity log for "The Pi's clock is … GPS time" and `/api/telemetry`
+for `"clock": {"source": "gps", ...}`.
+
 ---
 
 ## 8. ✅ RESOLVED — the offline map is downloaded and committed

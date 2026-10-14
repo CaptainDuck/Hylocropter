@@ -51,7 +51,7 @@ python hylocropter/app.py --debug                    # Flask reloader on
 
 ```bash
 pip install -r hylocropter/requirements-dev.txt
-pytest                            # 347 tests, from the repo root or anywhere
+pytest                            # 370 tests, from the repo root or anywhere
 pytest hylocropter/tests/test_index.py -v
 ```
 
@@ -72,6 +72,9 @@ pytest hylocropter/tests/test_index.py -v
 - `test_wifi.py` — `deploy/hylocropter_wifi.py`, the Wi-Fi recovery service: the
   boot-partition file parses forgivingly, a bad file never wipes working
   profiles, an emptied profile is rewritten, and only its own files are touched.
+- `test_clock.py` — GPS time standing in for the missing RTC: the 2-minute
+  threshold, carry-forward on the monotonic clock, `SYSTEM_TIME` only on a 3D
+  fix, and flight ids / photo stamps / a late-corrected start using it.
 - `test_routes.py` — every page renders with no camera and no drone. Imports
   `app.py`, so it sets `HYLOCROPTER_DATA` to a scratch directory first; **never
   point that at real data.**
@@ -154,6 +157,13 @@ the memory on a Pi 4.
   The per-trigger pipeline it replaced lost most photos on the first real mission.
 - **`telemetry.py`** — pymavlink reader thread. **Read-only: it never arms the
   aircraft.** ⚠️ Has never run against real hardware — see `RESEARCH-GAPS.md` §7.
+- **`clock.py`** — the "trusted now". The Pi has no RTC and boots offline on
+  fake-hwclock's stale time, so telemetry feeds it GPS UTC from `SYSTEM_TIME`
+  (3D fix only) and it overrides the system clock when that is > 2 min off.
+  Flight ids, `started_at`/`ended_at` and photo timestamps all come from it —
+  never call `datetime.now()` for a record's time. Every flight and capture
+  records `clock: {source: gps|system|unsynced, offset_s}`, shown on its page.
+  It never sets the system clock.
 - **`flights.py`** — flight/capture store, map-grid binning, legacy migration.
 - **`settings.py`** — persisted settings with clamping and validation.
 - **`system.py`** — device actions. Destructive ones return a confirmation
@@ -196,7 +206,7 @@ configured and never read.
 Capture records keep all 8 original keys (`id`, `timestamp`, `label`, `notes`,
 `files`, `stats`, `classification`, `settings`) so pre-Hylocropter records still
 render. Additions are **additive**: `flight_id`, `geo`, `trigger`, `channels`,
-`exposure_check`, `process_ms`, and new keys inside `settings`. Legacy records
+`exposure_check`, `process_ms`, `clock`, and new keys inside `settings`. Legacy records
 have `flight_id: None` and show as "Ground captures".
 
 Flights carry `bounds`, a `grid` (14×9 cells binned from capture positions), and

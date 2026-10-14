@@ -53,6 +53,9 @@
         {%- elif flight.duration_s %} · under a minute{% endif %}
         {%- if flight.capture_count %} · {{ flight.capture_count }} photos{% endif %}
       </p>
+      {% if flight.clock|clock_note %}
+        <p class="page-sub text-muted" style="font-size:12.5px">{{ flight.clock|clock_note }}</p>
+      {% endif %}
     </div>
     <button class="btn btn-secondary" onclick="window.print()">Save as PDF</button>
     <a class="btn btn-primary" href="{{ url_for('page_new_flight') }}">New flight</a>

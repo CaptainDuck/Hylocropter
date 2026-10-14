@@ -29,6 +29,7 @@ import threading
 from pathlib import Path
 
 import bndvi
+import clock as clock_mod
 
 log = logging.getLogger("hylocropter.flights")
 
@@ -52,8 +53,11 @@ ALL = object()
 class Store:
     """Owns hylocropter_data/: the two indexes and the per-flight directories."""
 
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, clock=None):
         self.data_dir = Path(data_dir)
+        # The Pi has no real-time clock; this one is corrected by GPS time once
+        # the controller has sent it (clock.py).
+        self.clock = clock or clock_mod.default
         self.captures_file = self.data_dir / "captures.json"
         self.flights_file = self.data_dir / "flights.json"
         self.ground_dir = self.data_dir / "ground"
@@ -171,8 +175,12 @@ class Store:
 
     def open_flight(self, name=None, trigger="mission", mission=None,
                     thresholds=None):
-        """Start a flight. Returns the new record."""
-        now = datetime.datetime.now()
+        """Start a flight. Returns the new record.
+
+        The id is taken from the trusted clock and never changes afterwards --
+        it names the flight's folder and every photo path under it.
+        """
+        now = self.clock.now()
         flight = {
             "id": "F-" + now.strftime("%Y%m%d-%H%M"),
             "name": name or "Untitled flight",
@@ -189,6 +197,9 @@ class Store:
             "mission": mission or {},
             "trigger": trigger,
             "status": "recording",
+            # Where started_at came from, so the record says whether its date
+            # can be believed. See clock.Clock.status().
+            "clock": self.clock.status(),
             "thresholds": thresholds or {
                 "healthy": bndvi.DEFAULT_THRESHOLD_HEALTHY,
                 "moderate": bndvi.DEFAULT_THRESHOLD_MODERATE},
@@ -281,7 +292,10 @@ class Store:
         t_moderate = th.get("moderate", bndvi.DEFAULT_THRESHOLD_MODERATE)
 
         started = flight.get("started_at")
-        ended = datetime.datetime.now()
+        ended = self.clock.now()
+        clock_patch = self._correct_start(flight)
+        if clock_patch:
+            started = clock_patch["started_at"]
         duration = None
         if started:
             try:
@@ -298,6 +312,7 @@ class Store:
             "capture_ids": [c["id"] for c in captures],
             "status": "ok" if captures else "failed",
             "thresholds": {"healthy": t_healthy, "moderate": t_moderate},
+            **clock_patch,
         }
 
         readable = [c for c in captures if has_reading(c)]
@@ -321,6 +336,36 @@ class Store:
                  len(captures),
                  f"{patch['stats']['mean']:+.3f}" if readable else "n/a")
         return flight
+
+    def _correct_start(self, flight):
+        """Fix started_at for a flight opened before GPS time arrived.
+
+        A flight armed from the dashboard can be opened before the GPS has a
+        fix, so its start was stamped with the Pi's own clock. If GPS time has
+        turned up since and says that clock is wrong, shift the start by the
+        same amount. The id is left alone -- it names the folder and every
+        photo path -- so it may still show the Pi's date; the times shown are
+        right. Returns the patch, or {} when there is nothing to fix.
+        """
+        note = flight.get("clock") or {}
+        started = flight.get("started_at")
+        if note.get("source") != "unsynced" or not started:
+            return {}
+        if not self.clock.corrected():
+            return {}
+        offset = self.clock.offset_s()
+        try:
+            fixed = (datetime.datetime.fromisoformat(started)
+                     + datetime.timedelta(seconds=offset))
+        except ValueError:
+            return {}
+        log.warning("Flight %s was started before GPS time arrived; its start "
+                    "has been moved by %s", flight["id"],
+                    clock_mod.describe_offset(offset),
+                    extra={"activity": True})
+        return {"started_at": fixed.isoformat(timespec="seconds"),
+                "clock": {"source": "gps", "offset_s": round(offset, 1),
+                          "start_corrected": True}}
 
     def recolour_flight(self, flight_id, t_healthy, t_moderate):
         """Recompute band shares for a flight at new thresholds.

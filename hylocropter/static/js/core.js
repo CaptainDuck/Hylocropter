@@ -244,17 +244,36 @@ document.addEventListener('DOMContentLoaded', function () {
   /* ── flight banner ──────────────────────────────────────────────────────
      A flight opens by itself when the drone arms, whether or not anyone
      pressed "Get the camera ready", and its photos are processed by
-     themselves after it disarms. The banner says which of the two is going on
-     and links to the page that shows it. It never navigates by itself. While
-     the photos are processing the flight is still marked recording, so the
-     processing check has to come first or the link points at the flight page. */
+     themselves after it disarms. Whatever page is open goes to the one that
+     shows it -- the flight page, then the progress screen -- once per flight
+     and stage, so going back to the map on purpose sticks and the banner
+     links back instead. Debug, Setup and Settings only get the banner, so a
+     calibration or a half-typed setting is never thrown away. While the
+     photos are processing the flight is still marked recording, so the
+     processing check has to come first or it points at the flight page. */
   const view = document.body.dataset.view;
   const banner = HC.$('#flight-banner');
+  const STAY = { debug: true, setup: true, settings: true };
+  const seen = {};             // used when sessionStorage is unavailable
+
+  function firstTime(key) {
+    key = 'hc-follow:' + key;
+    try {
+      if (sessionStorage.getItem(key)) return false;
+      sessionStorage.setItem(key, '1');
+      return true;
+    } catch (e) {
+      if (seen[key]) return false;
+      seen[key] = true;
+      return true;
+    }
+  }
 
   function flightStage(snap) {
     const proc = snap.processing || {};
     if (proc.running) {
       return {
+        key: 'processing:' + proc.flight_id,
         here: view === 'processing',
         title: 'Working on the photos from ' + proc.flight_id,
         body: proc.total ? proc.done + ' of ' + proc.total + ' photos processed.'
@@ -267,6 +286,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const rec = snap.recorder || {};
     const taken = rec.flight_id === id ? rec.taken : null;
     return {
+      key: 'flying:' + id,
       here: view === 'newflight',
       title: 'Recording ' + id,
       body: 'A flight is in progress' +
@@ -276,9 +296,17 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   function paintFlightBanner(snap) {
-    if (!banner) return;
     const s = flightStage(snap);
-    if (!s || s.here) { banner.hidden = true; return; }
+    if (!s || s.here) {
+      if (s) firstTime(s.key);  // already watching: don't pull back later
+      if (banner) banner.hidden = true;
+      return;
+    }
+    if (!STAY[view] && firstTime(s.key)) {
+      window.location.href = s.href;
+      return;
+    }
+    if (!banner) return;
     HC.$('#flight-banner-title').textContent = s.title;
     HC.$('#flight-banner-body').textContent = s.body;
     const link = HC.$('#flight-banner-link');

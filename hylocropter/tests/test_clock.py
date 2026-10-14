@@ -262,3 +262,102 @@ def test_a_photo_is_stamped_with_gps_time(tmp_path, clk):
     assert job["when"] == datetime.datetime(2026, 10, 13, 13, 40, 0)
     assert job["clock"]["source"] == "gps"
     assert recorder_mod.new_capture_id(job["when"], 1) == "20261013_134000_0001"
+
+
+# ── re-dating a flight recorded before this fix ─────────────────────────────
+
+import json                                                  # noqa: E402
+import sys                                                   # noqa: E402
+from pathlib import Path                                     # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "deploy"))
+import fix_flight_clock                                      # noqa: E402
+
+JUMP = 247_531        # what the 13 October log and photo 0028 both say
+
+
+@pytest.fixture
+def stale_flight(tmp_path):
+    """F-20261010-1657 as it was stored: start and photos on the Pi's stale
+    clock, ended_at after the clock was put right, photo 0002 timing itself
+    across the jump. Plus an unrelated flight and ground capture."""
+    old = "F-20261010-1657"
+    (tmp_path / old).mkdir()
+    (tmp_path / old / "thumb_20261010_165725_0001.jpg").write_text("x")
+    flights = [
+        {"id": old, "status": "ok", "started_at": "2026-10-10T16:57:06",
+         "ended_at": "2026-10-13T14:05:34", "duration_s": 248908},
+        {"id": "F-20261013-1518", "status": "ok",
+         "started_at": "2026-10-13T15:18:01", "ended_at": "2026-10-13T15:42:18"},
+    ]
+    captures = [
+        {"id": "20261010_165725_0001", "flight_id": old,
+         "timestamp": "2026-10-10T16:57:25.316", "process_ms": 20999,
+         "files": {"thumb": "thumb_20261010_165725_0001.jpg"}},
+        {"id": "20261010_165727_0002", "flight_id": old,
+         "timestamp": "2026-10-10T16:57:27.082", "process_ms": 247_550_631},
+        {"id": "20261013_151900_0001", "flight_id": "F-20261013-1518",
+         "timestamp": "2026-10-13T15:19:00.000"},
+        {"id": "20261001_120000", "flight_id": None,
+         "timestamp": "2026-10-01T12:00:00"},
+    ]
+    (tmp_path / "flights.json").write_text(json.dumps(flights))
+    (tmp_path / "captures.json").write_text(json.dumps(captures))
+    return tmp_path
+
+
+def _fix(data, *extra):
+    return fix_flight_clock.main(["F-20261010-1657", "--offset", str(JUMP),
+                                  "--before", "2026-10-11", "--data", str(data),
+                                  *extra])
+
+
+def test_a_dry_run_writes_nothing(stale_flight):
+    before = (stale_flight / "flights.json").read_text()
+    _fix(stale_flight, "--new-id", "F-20261013-1342")
+    assert (stale_flight / "flights.json").read_text() == before
+    assert (stale_flight / "F-20261010-1657").is_dir()
+
+
+def test_the_13_october_flight_is_re_dated_and_renamed(stale_flight):
+    _fix(stale_flight, "--new-id", "F-20261013-1342", "--apply")
+    flights = json.loads((stale_flight / "flights.json").read_text())
+    caps = {c["id"]: c for c in
+            json.loads((stale_flight / "captures.json").read_text())}
+    f = next(f for f in flights if f["id"] == "F-20261013-1342")
+    assert f["started_at"] == "2026-10-13T13:42:37"
+    assert f["ended_at"] == "2026-10-13T14:05:34"      # was already right
+    assert f["duration_s"] == 1377
+    assert f["clock"] == {"source": "corrected", "offset_s": JUMP,
+                          "renamed_from": "F-20261010-1657"}
+    first = caps["20261010_165725_0001"]
+    assert first["timestamp"] == "2026-10-13T13:42:56.316"
+    assert first["flight_id"] == "F-20261013-1342"
+    assert caps["20261010_165727_0002"]["process_ms"] == 19631
+    # The folder moved and the photo still resolves through the store.
+    assert not (stale_flight / "F-20261010-1657").exists()
+    store = flights_mod.Store(stale_flight)
+    assert store.file_path("20261010_165725_0001", "thumb").exists()
+    # Nothing else was touched.
+    assert caps["20261013_151900_0001"]["timestamp"] == "2026-10-13T15:19:00.000"
+    assert caps["20261001_120000"]["timestamp"] == "2026-10-01T12:00:00"
+    assert "clock" not in caps["20261013_151900_0001"]
+    assert len(list(stale_flight.glob("*.bak-clockfix-*"))) == 2
+
+
+def test_re_dating_twice_does_not_move_it_twice(stale_flight):
+    _fix(stale_flight, "--apply")
+    _fix(stale_flight, "--apply")
+    flights = json.loads((stale_flight / "flights.json").read_text())
+    assert flights[0]["started_at"] == "2026-10-13T13:42:37"
+
+
+def test_it_will_not_rename_onto_an_existing_flight(stale_flight):
+    with pytest.raises(SystemExit):
+        _fix(stale_flight, "--new-id", "F-20261013-1518", "--apply")
+    assert (stale_flight / "F-20261010-1657").is_dir()
+
+
+def test_a_corrected_record_says_so():
+    assert "corrected afterwards" in clock_mod.note(
+        {"source": "corrected", "offset_s": JUMP})

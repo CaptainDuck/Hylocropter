@@ -66,6 +66,11 @@ def note(status):
         off = status.get("offset_s")
         when = f"was {describe_offset(off)} — " if off is not None else "was off — "
         return f"The Pi's clock {when}GPS time was used."
+    if source == "corrected":
+        off = status.get("offset_s")
+        was = f"was {describe_offset(off)}" if off is not None else "was wrong"
+        return (f"The Pi's clock {was} when this was recorded; the date was "
+                f"corrected afterwards.")
     if source == "unsynced":
         return ("The drone's GPS had not given the time yet, so this date is "
                 "the Pi's own clock and may be wrong.")

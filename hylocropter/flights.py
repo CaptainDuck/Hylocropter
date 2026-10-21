@@ -518,6 +518,28 @@ def compute_bounds(captures):
     return {"south": south, "west": west, "north": north, "east": east}
 
 
+def cell_index(geo, bounds, cols=GRID_COLS, rows=GRID_ROWS):
+    """Which grid cell a position falls in, or None outside `bounds`.
+
+    Row 0 is the northern edge. The one place the binning is done, so the map's
+    colours and the tap-a-square details can never disagree about which photos
+    a square holds.
+    """
+    if not bounds or not geo or geo.get("lat") is None:
+        return None
+    dlat = bounds["north"] - bounds["south"]
+    dlon = bounds["east"] - bounds["west"]
+    if dlat <= 0 or dlon <= 0:
+        return None
+    fx = (geo["lon"] - bounds["west"]) / dlon
+    fy = 1.0 - (geo["lat"] - bounds["south"]) / dlat   # row 0 is north
+    if not (0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0):
+        return None
+    col = min(cols - 1, int(fx * cols))
+    row = min(rows - 1, int(fy * rows))
+    return row * cols + col
+
+
 def build_grid(captures, bounds, t_healthy, t_moderate,
                cols=GRID_COLS, rows=GRID_ROWS):
     """Bin capture means into a cols x rows grid over `bounds`.
@@ -532,25 +554,15 @@ def build_grid(captures, bounds, t_healthy, t_moderate,
 
     sums = [0.0] * (cols * rows)
     counts = [0] * (cols * rows)
-    dlat = bounds["north"] - bounds["south"]
-    dlon = bounds["east"] - bounds["west"]
-    if dlat <= 0 or dlon <= 0:
-        return {"cols": cols, "rows": rows, "cells": cells, "covered": 0}
-
     for c in captures:
-        geo = c.get("geo")
         # No reading is not the same as a reading of zero: a capture that was
         # entirely below the signal floor leaves its cell null, exactly as a cell
         # the drone never flew over stays null.
-        if not geo or geo.get("lat") is None or not has_reading(c):
+        if not has_reading(c):
             continue
-        fx = (geo["lon"] - bounds["west"]) / dlon
-        fy = 1.0 - (geo["lat"] - bounds["south"]) / dlat   # row 0 is north
-        if not (0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0):
+        idx = cell_index(c.get("geo"), bounds, cols, rows)
+        if idx is None:
             continue
-        col = min(cols - 1, int(fx * cols))
-        row = min(rows - 1, int(fy * rows))
-        idx = row * cols + col
         sums[idx] += c["stats"]["mean"]
         counts[idx] += 1
 
@@ -560,6 +572,71 @@ def build_grid(captures, bounds, t_healthy, t_moderate,
             cells[i] = round(sums[i] / counts[i], 4)
             covered += 1
     return {"cols": cols, "rows": rows, "cells": cells, "covered": covered}
+
+
+def cell_size_m(bounds, cols=GRID_COLS, rows=GRID_ROWS):
+    """(width, height) of one grid square on the ground, in metres."""
+    if not bounds:
+        return None
+    mid = (bounds["north"] + bounds["south"]) / 2
+    return ((bounds["east"] - bounds["west"]) * m_per_deg_lon(mid) / cols,
+            (bounds["north"] - bounds["south"]) * M_PER_DEG_LAT / rows)
+
+
+def grid_cells(captures, bounds, t_healthy, t_moderate,
+               cols=GRID_COLS, rows=GRID_ROWS):
+    """What the farmer sees when they tap a square: one entry per grid cell.
+
+    None for a square no photo with a reading landed in -- the same squares
+    build_grid() leaves null. Otherwise the square's mean (identical to the
+    grid's, so the colour and the explanation agree), the band that mean falls
+    in at *this flight's* thresholds, how many photos it averages, the share of
+    ground in those photos per band, and the photo taken nearest the square's
+    centre -- the one worth showing up close.
+
+    The pixel shares are there because a square's mean can sit comfortably
+    above the line while a corner of one photo reads red; the panel says so
+    rather than hiding it behind the average.
+    """
+    out = [None] * (cols * rows)
+    if not bounds:
+        return out
+    members = {}
+    for c in captures:
+        if not has_reading(c):
+            continue
+        idx = cell_index(c.get("geo"), bounds, cols, rows)
+        if idx is not None:
+            members.setdefault(idx, []).append(c)
+
+    dlat = (bounds["north"] - bounds["south"]) / rows
+    dlon = (bounds["east"] - bounds["west"]) / cols
+    for idx, caps in members.items():
+        row, col = divmod(idx, cols)
+        centre = (bounds["north"] - (row + 0.5) * dlat,
+                  bounds["west"] + (col + 0.5) * dlon)
+
+        def off_centre(c):
+            return ((c["geo"]["lat"] - centre[0]) ** 2
+                    + ((c["geo"]["lon"] - centre[1])
+                       * math.cos(math.radians(centre[0]))) ** 2)
+
+        def share(key):
+            vals = [c["stats"].get(key) for c in caps
+                    if c["stats"].get(key) is not None]
+            return round(sum(vals) / len(vals), 2) if vals else None
+
+        mean = round(sum(c["stats"]["mean"] for c in caps) / len(caps), 4)
+        out[idx] = {
+            "row": row, "col": col, "mean": mean,
+            "band": bndvi.classify(mean, t_healthy, t_moderate),
+            "photos": len(caps),
+            "healthy_pct": share("healthy_pct"),
+            "moderate_pct": share("moderate_pct"),
+            "stressed_pct": share("stressed_pct"),
+            "photo": min(caps, key=off_centre)["id"],
+        }
+    return out
 
 
 def footprint(geo, fov_h_deg=62.2, fov_v_deg=48.8, canopy_m=0.0,
@@ -1222,41 +1299,50 @@ def compare_flights(flight, previous, deadband=COMPARE_DEADBAND_PCT):
                 "message": "Can't compare — the flight before has no weak-spot "
                            "reading."}
     figures = f"{now:.1f}% of the block, {{}} {before:.1f}% last time."
+    # The figures ride along so the page can say them in Tagalog too.
+    nums = {"now": now, "before": before}
     if now < before - deadband:
-        return {"direction": "better",
+        return {"direction": "better", **nums,
                 "message": "Better than the flight before — fewer weak spots: "
                            + figures.format("down from")}
     if now > before + deadband:
-        return {"direction": "worse",
+        return {"direction": "worse", **nums,
                 "message": "Worse than the flight before — more weak spots: "
                            + figures.format("up from")}
-    return {"direction": "same",
+    return {"direction": "same", **nums,
             "message": "About the same as the flight before — weak spots on "
                        + figures.format("against")}
 
 
-def summarise(mean, stressed_pct, has_gps=True):
-    """Plain-language summary, in the mockup's voice.
+def verdict(cells, stats=None, thresholds=None):
+    """The farm-level status, worked out from the squares on the map.
 
-    The thesis asks for exactly this: a farm-level status summary in ordinary
-    words, with the numbers available underneath for technical review.
+    It used to come from its own cut-offs on the mean (0.38 / 0.22) while the
+    map and legend used the flight's thresholds (0.30 / 0.10), so a flight at
+    +0.37 with nothing stressed was told to "walk the red patches" -- there were
+    none. Counting the squares the map actually paints keeps the words, the
+    legend and the colours in step.
+
+    Returns ``{"level", "counts", "covered", "basis"}``; level is the worst
+    band any square is in. A flight with no GPS has no squares, so it falls back
+    to the band its overall mean falls in (``basis: "mean"``) -- still the same
+    thresholds as the legend, just with no map to point at.
     """
-    if mean > 0.38:
-        headline = "The plants look healthy."
-        advice = "Nothing to do today. Fly again in three days."
-        plain = (f"Only about {round(stressed_pct)} out of every 100 spots came "
-                 f"back weak. Nothing unusual for this block.")
-    elif mean > 0.22:
-        headline = "Mostly fine, a few spots to check."
-        advice = "Walk the red patches in the next day or two."
-        plain = (f"About {round(stressed_pct)} out of every 100 spots came back "
-                 f"weak — they show up red on the map.")
-    else:
-        headline = "Several rows need attention."
-        advice = "Check the water lines on the red rows today."
-        plain = (f"About {round(stressed_pct)} out of every 100 spots came back "
-                 f"weak. The red areas are where to start.")
-    if not has_gps:
-        plain += (" These photos had no GPS fix, so they could not be placed on "
-                  "the map.")
-    return {"headline": headline, "plain": plain, "advice": advice}
+    counts = {"healthy": 0, "moderate": 0, "stressed": 0}
+    for c in cells or []:
+        if c:
+            counts[c["band"]] += 1
+    covered = sum(counts.values())
+    if covered:
+        level = ("stressed" if counts["stressed"]
+                 else "moderate" if counts["moderate"] else "healthy")
+        return {"level": level, "counts": counts, "covered": covered,
+                "basis": "squares"}
+    if stats and stats.get("mean") is not None:
+        th = thresholds or {}
+        level = bndvi.classify(
+            stats["mean"], th.get("healthy", bndvi.DEFAULT_THRESHOLD_HEALTHY),
+            th.get("moderate", bndvi.DEFAULT_THRESHOLD_MODERATE))
+        return {"level": level, "counts": counts, "covered": 0,
+                "basis": "mean"}
+    return {"level": None, "counts": counts, "covered": 0, "basis": None}

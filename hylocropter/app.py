@@ -16,6 +16,7 @@ Run on the Pi:
 """
 
 import argparse
+import json
 import logging
 import os
 import threading
@@ -38,7 +39,9 @@ import bndvi
 import camera as camera_mod
 import clock as clock_mod
 import flights as flights_mod
+import i18n
 import recorder as recorder_mod
+import report as report_mod
 import settings as settings_mod
 import system as system_mod
 import telemetry as telemetry_mod
@@ -154,6 +157,19 @@ device = system_mod.SystemService(store, cam, tel, config, REPO_ROOT)
 app.add_template_filter(clock_mod.note, "clock_note")
 
 
+def _lang():
+    return i18n.pick(request.cookies.get(i18n.COOKIE))
+
+
+@app.context_processor
+def _translations():
+    """`t('key', n=..., **kw)` in every template, in the visitor's language."""
+    lang = _lang()
+    return {"lang": lang,
+            "t": lambda key, n=None, **kw: i18n.t(lang, key, n=n, **kw),
+            "when": lambda ts: i18n.when(ts, lang)}
+
+
 def _json_error(message, status):
     return jsonify({"error": message}), status
 
@@ -257,18 +273,31 @@ def page_map():
     flight = store.flight(requested) if requested else (
         finished[0] if finished else None)
 
-    captures, summary, previous = [], None, None
+    captures, previous, cells, verdict, checks = [], None, [], None, []
+    cell_m = None
     if flight:
         captures = store.captures(flight_id=flight["id"], newest_first=False)
-        if flight.get("stats"):
-            summary = flights_mod.summarise(
-                flight["stats"]["mean"], flight["stats"]["stressed_pct"],
-                has_gps=bool(flight.get("bounds")))
+        th = flight.get("thresholds") or config.thresholds()
+        # The squares the farmer taps, binned exactly as the grid is, so the
+        # colour on the map and the words under it always agree.
+        cells = flights_mod.grid_cells(captures, flight.get("bounds"),
+                                       th["healthy"], th["moderate"])
+        size = flights_mod.cell_size_m(flight.get("bounds"))
+        cell_m = [round(size[0]), round(size[1])] if size else None
+        verdict = flights_mod.verdict(cells, flight.get("stats"), th)
         idx = next((i for i, f in enumerate(all_flights)
                     if f["id"] == flight["id"]), None)
         if idx is not None:
             previous = next((f for f in all_flights[idx + 1:]
                              if f.get("stats")), None)
+        everything = store.captures(newest_first=False)
+        by_flight = {}
+        for c in everything:
+            by_flight.setdefault(c.get("flight_id"), []).append(c)
+        history = [(f, by_flight.get(f["id"], [])) for f in finished]
+        checks = report_mod.checks(
+            flight, captures, history, config.as_dict(),
+            tile_areas=_tile_areas(), blocks=config.get("survey_blocks") or [])
 
     # Compact, map-ready view of the captures: position, footprint and the
     # false-colour thumbnail, which is what the photo mosaic is built from.
@@ -292,6 +321,14 @@ def page_map():
             "mean": (c.get("stats") or {}).get("mean"),
             "classification": c.get("classification"),
             "time": c["timestamp"][11:16],
+            "seconds": c["timestamp"][11:19],
+            # The photo's number within the flight: the id's last part.
+            "number": int(c["id"].rsplit("_", 1)[-1]) if
+            c["id"].rsplit("_", 1)[-1].isdigit() else None,
+            "healthy_pct": (c.get("stats") or {}).get("healthy_pct"),
+            "raw": (url_for("captures_file", filename=c["files"]["raw"])
+                    if c.get("files", {}).get("raw") else None),
+            "bands": url_for("capture_bands", capture_id=c["id"]),
             "thumb": (url_for("captures_file", filename=c["files"]["thumb"])
                       if c.get("files", {}).get("thumb") else None),
             "footprint": fp,
@@ -301,11 +338,21 @@ def page_map():
                 canopy_m=config.get("canopy_height_m")),
         })
 
+    comparison = flights_mod.compare_flights(flight, previous) if flight else None
+    if comparison and previous and comparison["direction"] in (
+            "better", "worse", "same"):
+        # A different leak k moves every reading on its own, so a comparison
+        # across one is the setting changing, not the plants.
+        k_now = report_mod.flight_k(captures)
+        k_before = report_mod.flight_k(store.captures(flight_id=previous["id"]))
+        if k_now != k_before:
+            comparison["k"] = {"now": k_now, "before": k_before}
+
     return render_template(
         "map.html", view="map", flight=flight, flights=all_flights,
-        captures=captures, pins=pins, summary=summary, previous=previous,
-        comparison=flights_mod.compare_flights(flight, previous) if flight else None,
-        trend=[f for f in finished if f.get("stats")][:6][::-1],
+        captures=captures, pins=pins, previous=previous, cells=cells,
+        cell_m=cell_m, verdict=verdict, checks=checks, comparison=comparison,
+        js_strings=i18n.bundle(_lang(), i18n.STRINGS.keys()),
         ground_captures=store.ground_captures(),
         **_shell())
 
@@ -442,12 +489,7 @@ def page_capture(capture_id):
     record = store.capture(capture_id)
     if record is None:
         return _handle_404()
-    stats = record.get("stats") or {}
-    summary = flights_mod.summarise(stats.get("mean", 0.0),
-                                    stats.get("stressed_pct", 0.0),
-                                    has_gps=bool(record.get("geo")))
     return render_template("capture.html", view="capture", r=record,
-                           summary=summary,
                            flight=store.flight(record.get("flight_id")),
                            **_shell())
 
@@ -472,6 +514,73 @@ def page_settings():
                            device_info=device.info(),
                            resolutions=settings_mod.RESOLUTIONS,
                            tile_plan=_tile_plan(), **_shell())
+
+
+@app.route("/lang/<code>")
+def set_language(code):
+    """Switch the results page between Tagalog and English, and remember it."""
+    back = request.args.get("next") or "/"
+    if not back.startswith("/") or back.startswith("//"):
+        back = "/"                      # only ever back into this dashboard
+    resp = redirect(back)
+    resp.set_cookie(i18n.COOKIE, i18n.pick(code), max_age=365 * 24 * 3600,
+                    samesite="Lax")
+    return resp
+
+
+def _tile_areas():
+    """Every patch of imagery the tile manifest says is on disk."""
+    try:
+        m = json.loads((TILES_DIR / "manifest.json").read_text())
+    except (OSError, ValueError):
+        return []
+    return m.get("areas") or ([m] if m.get("bounds") else [])
+
+
+# Longest side of the three-colour render. The page shows it at phone width;
+# the full 3280 px frame would take seconds to encode on the Pi for nothing.
+BANDS_RENDER_PX = 1024
+
+
+@app.route("/captures/<capture_id>/bands.png")
+def capture_bands(capture_id):
+    """One photo in the legend's three flat colours, at its flight's thresholds.
+
+    The stored false-colour image uses the smooth colour scale, where +0.35 is
+    yellow -- next to a legend saying anything above 0.30 is green, that reads
+    as a contradiction. This renders the saved BNDVI array in the same three
+    colours as the map, once, and keeps the result beside the capture.
+    """
+    record = store.capture(capture_id)
+    if not record:
+        return _handle_404()
+    folder = store.capture_dir(record.get("flight_id"))
+    name = f"bands_{capture_id}.png"
+    if (folder / Path(name).name).exists():
+        return send_from_directory(folder, name)
+    array = (record.get("files") or {}).get("array")
+    if not array or not (folder / array).exists():
+        # No saved array (save_array was off): the smooth false-colour image is
+        # the best there is.
+        fallback = (record.get("files") or {}).get("falsecolor")
+        if fallback and (folder / fallback).exists():
+            return send_from_directory(folder, fallback)
+        return _handle_404()
+
+    from PIL import Image
+    bndvi_arr = np.load(folder / array)["bndvi"]
+    step = max(1, int(np.ceil(max(bndvi_arr.shape) / BANDS_RENDER_PX)))
+    small = bndvi_arr[::step, ::step]
+    s = record.get("settings") or {}
+    flight = store.flight(record.get("flight_id")) if record.get("flight_id") else None
+    th = (flight or {}).get("thresholds") or {
+        "healthy": s.get("threshold_healthy", bndvi.DEFAULT_THRESHOLD_HEALTHY),
+        "moderate": s.get("threshold_moderate", bndvi.DEFAULT_THRESHOLD_MODERATE)}
+    mask = ~np.isfinite(small)
+    rgb = bndvi.bndvi_to_bands_rgb(np.nan_to_num(small), th["healthy"],
+                                   th["moderate"], mask=mask if mask.any() else None)
+    Image.fromarray(rgb).save(folder / name)
+    return send_from_directory(folder, name)
 
 
 @app.route("/captures/<path:filename>")

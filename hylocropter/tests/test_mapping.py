@@ -268,7 +268,12 @@ def test_a_flight_with_no_gps_still_produces_stats_but_no_map():
     assert bounds is None
     assert grid["covered"] == 0
     assert stats["mean"] == pytest.approx(0.4)
-    assert "no GPS" in flights.summarise(stats["mean"], 10, has_gps=False)["plain"]
+    # No squares to count, so the verdict falls back to the mean -- at the same
+    # thresholds as the legend -- and says that is what it did.
+    v = flights.verdict(flights.grid_cells(caps, bounds, 0.3, 0.1), stats,
+                        {"healthy": 0.3, "moderate": 0.1})
+    assert v == {"level": "healthy", "basis": "mean", "covered": 0,
+                 "counts": {"healthy": 0, "moderate": 0, "stressed": 0}}
 
 
 # ── mission planning ────────────────────────────────────────────────────────
@@ -540,21 +545,77 @@ def test_a_square_practice_area_still_picks_a_line_direction():
     assert plan["line_direction"] in ("east–west", "north–south")
 
 
-# ── plain-language summary ───────────────────────────────────────────────────
+# ── plain-language verdict, per square ───────────────────────────────────────
+#
+# The verdict used to come from its own cut-offs on the mean (0.38 / 0.22) while
+# the map used the flight's thresholds (0.30 / 0.10). On 9 Oct that told a farmer
+# to "walk the red patches" on a flight with nothing red. It now counts the
+# squares the map paints.
 
-@pytest.mark.parametrize("mean,fragment", [
-    (0.55, "look healthy"),
-    (0.30, "a few spots"),
-    (0.05, "need attention"),
-])
-def test_summary_voice_follows_the_mean(mean, fragment):
-    assert fragment in flights.summarise(mean, 12)["headline"]
+def _grid_caps():
+    """Three squares: one comfortably green, one amber, one green at +0.37 --
+    the 9 Oct mean that the old summary called a problem."""
+    return [_capture("a", 14.13050, 121.08200, 0.45),
+            _capture("b", 14.13050, 121.08300, 0.20),
+            _capture("c", 14.13100, 121.08250, 0.37),
+            _capture("d", 14.13100, 121.08250, 0.37)]
 
 
-def test_summary_always_offers_something_to_do():
-    for mean in (0.6, 0.3, 0.0, -0.5):
-        s = flights.summarise(mean, 20)
-        assert s["advice"] and s["plain"] and s["headline"]
+def _grid_bounds():
+    return {"south": 14.1300, "west": 121.0815, "north": 14.1315,
+            "east": 121.0835}
+
+
+def test_grid_cells_agree_with_the_grid():
+    caps = _grid_caps()
+    bounds = _grid_bounds()
+    grid = flights.build_grid(caps, bounds, 0.3, 0.1)
+    cells = flights.grid_cells(caps, bounds, 0.3, 0.1)
+    assert len(cells) == len(grid["cells"])
+    for g, c in zip(grid["cells"], cells):
+        assert (g is None) == (c is None)
+        if c:
+            assert c["mean"] == g
+    shared = next(c for c in cells if c and c["photos"] == 2)
+    assert shared["band"] == "healthy" and shared["photo"] in ("c", "d")
+
+
+def test_an_unvisited_square_stays_empty_in_the_details_too():
+    cells = flights.grid_cells(_grid_caps(), _grid_bounds(), 0.3, 0.1)
+    assert sum(1 for c in cells if c) == 3
+    assert cells.count(None) == len(cells) - 3
+
+
+def test_the_verdict_is_the_worst_square():
+    cells = flights.grid_cells(_grid_caps(), _grid_bounds(), 0.3, 0.1)
+    v = flights.verdict(cells)
+    assert v["level"] == "moderate" and v["basis"] == "squares"
+    assert v["counts"] == {"healthy": 2, "moderate": 1, "stressed": 0}
+
+
+def test_a_flight_at_037_with_nothing_red_is_not_told_to_walk_red_patches():
+    """F-20261009-1603: mean +0.37, 0% stressed. Every square is green at the
+    flight's own 0.30 line, so the verdict is green."""
+    caps = [c for c in _grid_caps() if c["id"] in ("c", "d")]
+    v = flights.verdict(flights.grid_cells(caps, _grid_bounds(), 0.3, 0.1))
+    assert v["level"] == "healthy"
+
+
+def test_the_verdict_follows_the_flights_own_thresholds():
+    caps = [c for c in _grid_caps() if c["id"] in ("c", "d")]
+    strict = flights.grid_cells(caps, _grid_bounds(), 0.40, 0.30)
+    assert flights.verdict(strict)["level"] == "moderate"
+
+
+def test_a_flight_with_nothing_measured_has_no_verdict():
+    assert flights.verdict([None] * 4)["level"] is None
+
+
+def test_cell_size_is_the_bounds_split_into_the_grid():
+    w, h = flights.cell_size_m(_grid_bounds())
+    assert w == pytest.approx(
+        0.002 * flights.m_per_deg_lon(14.13075) / flights.GRID_COLS, rel=1e-6)
+    assert h == pytest.approx(0.0015 * flights.M_PER_DEG_LAT / flights.GRID_ROWS)
 
 
 # ── compared with last time ──────────────────────────────────────────────────

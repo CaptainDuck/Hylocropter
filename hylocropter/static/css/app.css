@@ -294,18 +294,6 @@
   color: var(--color-neutral-900); font-size: 10px;
 }
 
-/* trend bars — plain flexbox, no charting library. The mockup's trend is six
-   bars with a height and a colour; pulling in Chart.js for that was what broke
-   the old dashboard offline. */
-.trend { display: flex; align-items: flex-end; gap: 8px; height: 78px; margin-top: 6px; }
-.trend-col {
-  flex: 1; display: flex; flex-direction: column; justify-content: flex-end;
-  align-items: center; gap: 5px; height: 100%;
-}
-.trend-bar { width: 100%; max-width: 34px; border-radius: 999px 999px 6px 6px; }
-.trend-label { font-size: 10px; color: color-mix(in srgb, var(--color-text) 50%, transparent); }
-.delta-arrow { font-family: var(--font-heading); font-size: 30px; line-height: 1; }
-
 .thumb-card { cursor: pointer; padding: var(--space-2); gap: var(--space-2);
   text-decoration: none; color: inherit; }
 .thumb-frame {
@@ -316,6 +304,99 @@
 .thumb-frame .tag { position: absolute; left: 8px; top: 8px; }
 .thumb-time { font-size: 12.5px; padding: 0 6px 4px;
   color: color-mix(in srgb, var(--color-text) 62%, transparent); }
+
+/* ── flight results (direction 1c: map first, tap a square) ─────────────── */
+
+.lang-toggle {
+  display: inline-flex; border: 1px solid var(--color-divider);
+  border-radius: 999px; overflow: hidden; align-self: center;
+}
+.lang-opt {
+  padding: 7px 12px; font-size: 12.5px; text-decoration: none;
+  color: var(--color-text);
+}
+.lang-opt + .lang-opt { border-left: 1px solid var(--color-divider); }
+.lang-opt:hover { background: color-mix(in srgb, var(--color-text) 8%, transparent); }
+.lang-opt.is-active { background: var(--color-accent); color: var(--color-bg); }
+
+.legend-swatch.is-none, .square-dot.is-none {
+  background: repeating-linear-gradient(45deg, #c0b6a5 0 2px, #eee7db 2px 4px);
+}
+
+.results-grid {
+  display: grid; gap: 16px; margin-top: 16px; align-items: start;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+}
+.square-card { gap: 14px; }
+.square-head { display: flex; gap: 14px; align-items: flex-start; }
+.square-dot {
+  width: 56px; height: 56px; flex: none; border-radius: 999px;
+  display: grid; place-items: center;
+  font-family: var(--font-heading); font-size: 13px; color: #f5ead8;
+}
+.square-dot.is-moderate, .square-dot.is-none { color: #201e1d; }
+.square-where {
+  font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--color-accent-700);
+}
+.square-name { font-family: var(--font-heading); font-size: 21px; line-height: 1.15; }
+.square-detail { font-size: 12.5px; color: var(--color-neutral-700); }
+.square-patch {
+  margin: 0; font-size: 13.5px; line-height: 1.45; padding: 10px 14px;
+  border-radius: var(--radius-md); background: var(--color-accent-200);
+  color: var(--color-accent-800);
+}
+.square-hint { margin: 0; font-size: 12.5px; color: var(--color-neutral-700); }
+#sq-photo { display: flex; flex-direction: column; gap: 10px; }
+.square-photo-title { font-family: var(--font-heading); font-size: 19px; }
+.square-note { margin: 0; font-size: 13.5px; line-height: 1.5; }
+.photo-frame {
+  position: relative; border-radius: 20px; overflow: hidden;
+  background: var(--color-neutral-300); aspect-ratio: 4 / 3;
+}
+.photo-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo-switch {
+  position: absolute; left: 10px; bottom: 10px; display: flex;
+  background: rgba(245, 234, 216, .94); border-radius: 999px; overflow: hidden;
+}
+.photo-switch button {
+  border: 0; cursor: pointer; padding: 7px 12px; background: transparent;
+  font: inherit; font-size: 12px; color: var(--color-text);
+}
+.photo-switch button.is-active { background: var(--color-accent); color: var(--color-bg); }
+
+.verdict-card {
+  background: var(--color-accent-2-100); flex-direction: row; gap: 14px;
+  align-items: flex-start;
+}
+.verdict-icon {
+  width: 44px; height: 44px; flex: none; border-radius: 999px;
+  display: grid; place-items: center; color: #f5ead8;
+}
+.verdict-icon.is-healthy { background: var(--stress-healthy); }
+.verdict-icon.is-moderate { background: var(--stress-moderate); color: #201e1d; }
+.verdict-icon.is-stressed { background: var(--stress-stressed); }
+.verdict-title { font-family: var(--font-heading); font-size: 22px; line-height: 1.15; }
+
+.tech-card > summary {
+  list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px;
+}
+.tech-card > summary::-webkit-details-marker { display: none; }
+.tech-title { font-family: var(--font-heading); font-size: 17px; margin-right: auto; }
+.tech-count {
+  background: var(--color-accent-200); color: var(--color-accent-800);
+  border-radius: 999px; padding: 2px 10px; font-size: 11.5px;
+}
+.tech-count.is-clear { background: var(--color-accent-2-200); color: var(--color-accent-2-800); }
+.tech-stats {
+  font-size: 12px; font-variant-numeric: tabular-nums; color: var(--color-neutral-800);
+  background: var(--color-bg); border-radius: 14px; padding: 8px 12px;
+}
+.tech-check { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; }
+
+@media (max-width: 760px) {
+  .results-grid { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* ── processing ─────────────────────────────────────────────────────────── */
 
@@ -457,6 +538,8 @@
   .grid-figs { grid-template-columns: 1fr 1fr; }
   #plot-map { height: 420px; }
   .map-legend { position: static; background: transparent; box-shadow: none; }
+  .results-grid { grid-template-columns: 1fr 1fr; }
+  .tech-card { display: block; }
   a[href]::after { content: ""; }
 }
 

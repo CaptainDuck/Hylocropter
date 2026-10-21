@@ -1,17 +1,18 @@
 /* Farm map.
  *
- * Four ways of looking at the same flight, because they answer different
- * questions:
+ * Three ways of looking at the same flight:
  *
- *   Photos — every capture's false-colour image drawn at the patch of ground it
- *            actually covers, rotated to the heading the drone was flying. This
- *            is the real farm heatmap: full detail, and honest about coverage
- *            because ground nobody photographed simply stays bare imagery.
- *   Grid   — the same data averaged into 14x9 cells. Coarser, but stable and
- *            comparable between flights, and it's what the summary numbers and
- *            the hover readout are computed from.
- *   Bands  — the grid at your three thresholds, for "which rows do I walk".
- *   Off    — satellite imagery alone.
+ *   Squares — the flight averaged into 14x9 squares, each in the legend's three
+ *             flat colours at the flight's thresholds, and hatched where no
+ *             photo landed. The default, because it is what the verdict counts
+ *             and what a tap explains (results.js): "which square do I walk to".
+ *   Photos  — every capture's false-colour image drawn at the patch of ground it
+ *             actually covers, rotated to the heading the drone was flying. Full
+ *             detail, but on the smooth colour scale rather than the legend's.
+ *   Off     — satellite imagery alone.
+ *
+ * There used to be a fourth, a smoothly interpolated grid. It painted +0.39
+ * yellow under a legend promising green for anything above 0.30, so it went.
  *
  * Footprints come from simple trigonometry: at height h a lens with horizontal
  * angle of view a covers 2*h*tan(a/2) across. For the Pi Camera v2 (62.2 x 48.8
@@ -52,11 +53,23 @@
     });
   }
 
-  let mode = 'photos';
+  let mode = 'bands';
   let overlay = null;
   let opacity = 0.82;
-  let showPins = true;
+  let showPins = false;
   const mosaicCache = {};
+
+  // The page's words, in its language (i18n.py). Absent before the first
+  // flight, when nothing here needs them.
+  const strEl = document.getElementById('results-strings');
+  const S = strEl ? JSON.parse(strEl.textContent) : {};
+  function say(key, fallback, vars) {
+    let text = S[key] || fallback;
+    Object.keys(vars || {}).forEach(function (k) {
+      text = text.split('{' + k + '}').join(vars[k]);
+    });
+    return text;
+  }
 
   const M_PER_DEG_LAT = 111320;
   function mPerDegLon(lat) { return M_PER_DEG_LAT * Math.cos(lat * Math.PI / 180); }
@@ -144,8 +157,9 @@
     return [[s - padLat, w - padLon], [n + padLat, e + padLon]];
   }
 
-  const openingBounds = mosaicBounds ||
-    (flight ? gridBounds : (allBlocksBounds() || vicinityBounds()));
+  // A flight opens on its squares -- the default view -- whole.
+  const openingBounds = flight ? gridBounds
+    : (allBlocksBounds() || vicinityBounds());
   map.fitBounds(openingBounds, { padding: [24, 24] });
   L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
 
@@ -670,84 +684,60 @@
 
   /* ── grid overlay ───────────────────────────────────────────────────────── */
 
-  /** Nearest covered cell for every empty cell.
+  /** The squares, flat, in the legend's colours.
    *
-   *  For interpolation only. Without it, smooth upscaling blends each covered
-   *  cell's *alpha* toward its empty neighbours and a sparse flight fades to
-   *  nearly invisible over the imagery. The alpha mask below then hides the
-   *  filled cells completely, so no unvisited ground is ever shown.
+   *  Vector rectangles rather than a picture, so the edges stay sharp however
+   *  far in you zoom. Squares no photo landed in are hatched rather than left
+   *  bare: inside the flight's outline, bare imagery looked like ground that
+   *  had been checked. The hatch is see-through and never a colour -- painting
+   *  an unvisited square would invent a reading.
    */
-  function fillNearest(cells, cols, rows) {
-    const filled = cells.slice();
-    const known = [];
-    for (let i = 0; i < cells.length; i++) {
-      if (cells[i] !== null && cells[i] !== undefined) {
-        known.push([i % cols, (i / cols) | 0, cells[i]]);
-      }
-    }
-    if (!known.length) return filled;
-    for (let i = 0; i < filled.length; i++) {
-      if (filled[i] !== null && filled[i] !== undefined) continue;
-      const x = i % cols, y = (i / cols) | 0;
-      let best = Infinity, val = known[0][2];
-      for (let k = 0; k < known.length; k++) {
-        const dx = known[k][0] - x, dy = known[k][1] - y;
-        const d = dx * dx + dy * dy;
-        if (d < best) { best = d; val = known[k][2]; }
-      }
-      filled[i] = val;
-    }
-    return filled;
-  }
-
-  function gridCanvas(bands) {
+  function squaresLayer() {
     const g = flight && flight.grid;
     if (!g) return null;
     const th = flight.thresholds || { healthy: 0.3, moderate: 0.1 };
-    const colours = bands ? g.cells : fillNearest(g.cells, g.cols, g.rows);
-
-    const cv = document.createElement('canvas');
-    cv.width = g.cols;
-    cv.height = g.rows;
-    const ctx = cv.getContext('2d');
-    const img = ctx.createImageData(g.cols, g.rows);
-    for (let i = 0; i < colours.length; i++) {
-      const v = colours[i];
-      if (v === null || v === undefined) { img.data[i * 4 + 3] = 0; continue; }
-      const c = bands ? Colormap.band(v, th.healthy, th.moderate) : Colormap.cmap(v);
-      img.data[i * 4] = c[0];
-      img.data[i * 4 + 1] = c[1];
-      img.data[i * 4 + 2] = c[2];
-      img.data[i * 4 + 3] = 255;
-    }
-    ctx.putImageData(img, 0, 0);
-
-    const scale = 24;
-    const big = document.createElement('canvas');
-    big.width = g.cols * scale;
-    big.height = g.rows * scale;
-    const bctx = big.getContext('2d');
-    bctx.imageSmoothingEnabled = !bands;
-    bctx.imageSmoothingQuality = 'high';
-    bctx.drawImage(cv, 0, 0, big.width, big.height);
-
-    // Punch out everything the drone did not photograph. Unsmoothed, so the
-    // coverage boundary stays crisp and honest.
-    const mask = document.createElement('canvas');
-    mask.width = g.cols;
-    mask.height = g.rows;
-    const mctx = mask.getContext('2d');
-    const mimg = mctx.createImageData(g.cols, g.rows);
+    const dLat = (gridBounds[1][0] - gridBounds[0][0]) / g.rows;
+    const dLon = (gridBounds[1][1] - gridBounds[0][1]) / g.cols;
+    const group = L.layerGroup();
     for (let i = 0; i < g.cells.length; i++) {
-      const covered = g.cells[i] !== null && g.cells[i] !== undefined;
-      mimg.data[i * 4] = mimg.data[i * 4 + 1] = mimg.data[i * 4 + 2] = 255;
-      mimg.data[i * 4 + 3] = covered ? 255 : 0;
+      const v = g.cells[i];
+      const row = (i / g.cols) | 0, col = i % g.cols;
+      const north = gridBounds[1][0] - row * dLat;
+      const west = gridBounds[0][1] + col * dLon;
+      const empty = v === null || v === undefined;
+      const rect = L.rectangle([[north - dLat, west], [north, west + dLon]], {
+        stroke: true, color: 'rgba(32, 30, 29, 0.35)', weight: 1,
+        fillColor: empty ? '#2e2b25'
+          : Colormap.rgbCss(Colormap.band(v, th.healthy, th.moderate)),
+        fillOpacity: empty ? 0.15 : opacity, interactive: false,
+        className: empty ? 'square-empty' : 'square-filled'
+      });
+      group.addLayer(rect);
     }
-    mctx.putImageData(mimg, 0, 0);
-    bctx.globalCompositeOperation = 'destination-in';
-    bctx.imageSmoothingEnabled = false;
-    bctx.drawImage(mask, 0, 0, big.width, big.height);
-    return big.toDataURL();
+    return group;
+  }
+
+  /** The hatch for empty squares: an SVG pattern in Leaflet's own overlay svg. */
+  function addHatch() {
+    const svg = map.getPanes().overlayPane.querySelector('svg');
+    if (!svg || svg.querySelector('#hc-hatch')) return;
+    const ns = 'http://www.w3.org/2000/svg';
+    const defs = document.createElementNS(ns, 'defs');
+    const pat = document.createElementNS(ns, 'pattern');
+    pat.setAttribute('id', 'hc-hatch');
+    pat.setAttribute('patternUnits', 'userSpaceOnUse');
+    pat.setAttribute('width', '7');
+    pat.setAttribute('height', '7');
+    pat.setAttribute('patternTransform', 'rotate(45)');
+    const bg = document.createElementNS(ns, 'rect');
+    bg.setAttribute('width', '7'); bg.setAttribute('height', '7');
+    bg.setAttribute('fill', 'rgba(46, 43, 37, 0.25)');
+    const line = document.createElementNS(ns, 'rect');
+    line.setAttribute('width', '3'); line.setAttribute('height', '7');
+    line.setAttribute('fill', 'rgba(245, 234, 216, 0.7)');
+    pat.appendChild(bg); pat.appendChild(line);
+    defs.appendChild(pat);
+    svg.insertBefore(defs, svg.firstChild);
   }
 
   /* ── overlay switching ──────────────────────────────────────────────────── */
@@ -760,8 +750,8 @@
     if (mode === 'photos') {
       if (!hasFootprints) {
         note('These photos have no altitude recorded, so the ground each one ' +
-             'covers is unknown. Showing the averaged grid instead.');
-        mode = 'smooth';
+             'covers is unknown. Showing the squares instead.');
+        mode = 'bands';
         syncModeButtons();
       } else {
         if (!mosaicCache.url) mosaicCache.url = await buildMosaic();
@@ -769,13 +759,26 @@
         bounds = mosaicBounds;
       }
     }
-    if (mode === 'smooth' || mode === 'bands') url = gridCanvas(mode === 'bands');
+    if (mode === 'bands') {
+      overlay = squaresLayer();
+      if (!overlay) return;
+      overlay.addTo(map);
+      addHatch();
+      overlay.eachLayer(function (r) {
+        if (r.options.className === 'square-empty') {
+          r.setStyle({ fillColor: 'url(#hc-hatch)', fillOpacity: 1 });
+        }
+      });
+      if (selRing) selRing.bringToFront();
+      return;
+    }
     if (!url) return;
 
     overlay = L.imageOverlay(url, bounds, {
       opacity: opacity, interactive: false,
       className: mode === 'photos' ? 'mosaic-layer' : 'grid-layer'
     }).addTo(map);
+    if (selRing) selRing.bringToFront();
   }
 
   /* ── photo pins and flight track ────────────────────────────────────────── */
@@ -850,12 +853,10 @@
   /* ── hover readout ──────────────────────────────────────────────────────── */
 
   const hint = document.getElementById('map-hint');
-  const IDLE_HINT = pins.length
-    ? 'Move over the field to check one spot. Click a photo pin to open it.'
-    : (flight
-      ? 'Move over the field to check one spot. Scroll to zoom, drag to pan.'
-      : 'Scroll to zoom, drag to pan. The dashed line is as far as the offline ' +
-        'imagery goes.');
+  const IDLE_HINT = flight
+    ? say('map_hint', 'Tap a square to have it explained.')
+    : 'Scroll to zoom, drag to pan. The dashed line is as far as the offline ' +
+      'imagery goes.';
 
   function note(text) { if (hint) hint.textContent = text; }
 
@@ -891,17 +892,18 @@
     const parts = [];
 
     if (cell) {
-      const where = 'Row ' + (cell.row + 1) + ', column ' + (cell.col + 1);
+      const where = say('where', 'Row {r}, column {c}',
+                        { r: cell.row + 1, c: cell.col + 1 });
       if (cell.value === null || cell.value === undefined) {
-        parts.push(where + ' — no photo covered this spot');
+        parts.push(where + ' — ' + say('none', 'No photo').toLowerCase());
       } else {
         const th = (flight && flight.thresholds) || { healthy: 0.3, moderate: 0.1 };
         const name = Colormap.bandName(cell.value, th.healthy, th.moderate);
-        parts.push(where + ' — ' + Colormap.BAND_LABELS[name].toLowerCase() +
+        parts.push(where + ' — ' + say(name, Colormap.BAND_LABELS[name]) +
           ' · BNDVI ' + HC.fmt(cell.value));
       }
     }
-    if (near) {
+    if (near && showPins) {
       parts.push('nearest photo ' + near.pin.time + ' (' +
         Math.round(near.metres) + ' m away)');
     }
@@ -921,6 +923,39 @@
   map.on('click', function (e) {
     if (drawing) { onDrawClick(e.latlng); return; }
     note(describe(e.latlng));
+    // A tap on a square hands it to the panel below the map (results.js),
+    // which explains it and answers with hc:cell-selected.
+    const cell = readCell(e.latlng);
+    if (cell) {
+      document.dispatchEvent(new CustomEvent('hc:cell-pick', {
+        detail: { index: cell.row * flight.grid.cols + cell.col }
+      }));
+    }
+  });
+
+  /* ── the selected square ────────────────────────────────────────────────── */
+
+  let selRing = null;
+  document.addEventListener('hc:cell-selected', function (e) {
+    const g = flight && flight.grid;
+    if (!g) return;
+    const i = e.detail.index;
+    const row = (i / g.cols) | 0, col = i % g.cols;
+    const dLat = (gridBounds[1][0] - gridBounds[0][0]) / g.rows;
+    const dLon = (gridBounds[1][1] - gridBounds[0][1]) / g.cols;
+    const north = gridBounds[1][0] - row * dLat;
+    const west = gridBounds[0][1] + col * dLon;
+    const box = [[north - dLat, west], [north, west + dLon]];
+    if (selRing) selRing.setBounds(box);
+    else {
+      selRing = L.rectangle(box, {
+        color: '#201e1d', weight: 3, fill: false, interactive: false
+      }).addTo(map);
+    }
+    selRing.bringToFront();
+    if (e.detail.reveal && !map.getBounds().contains(box)) {
+      map.panTo([north - dLat / 2, west + dLon / 2]);
+    }
   });
 
   /* ── controls ───────────────────────────────────────────────────────────── */
@@ -936,10 +971,8 @@
       mode = btn.dataset.mode;
       syncModeButtons();
       note(mode === 'photos'
-        ? 'Each photo drawn where it was taken, at the ground it actually covers.'
-        : (mode === 'smooth' ? 'Averaged into a grid — coarser, but comparable between flights.'
-          : (mode === 'bands' ? 'Three colours at your thresholds.'
-            : 'Satellite imagery only.')));
+        ? say('photos_note', 'Each photo drawn where it was taken.')
+        : (mode === 'bands' ? IDLE_HINT : 'Satellite imagery only.'));
       drawOverlay();
     });
   });
@@ -948,7 +981,12 @@
   if (fade) {
     fade.addEventListener('input', function () {
       opacity = parseFloat(fade.value);
-      if (overlay) overlay.setOpacity(opacity);
+      if (overlay && overlay.setOpacity) overlay.setOpacity(opacity);
+      else if (overlay) {
+        overlay.eachLayer(function (r) {
+          if (r.options.className === 'square-filled') r.setStyle({ fillOpacity: opacity });
+        });
+      }
     });
   }
 
@@ -1158,7 +1196,7 @@
   drawOverlay();
 
   if (flight && !hasFootprints && pins.length) {
-    note('Photos have no altitude recorded, so only the averaged grid is ' +
+    note('Photos have no altitude recorded, so only the squares are ' +
          'available. Fly with the flight controller connected to get footprints.');
   }
 

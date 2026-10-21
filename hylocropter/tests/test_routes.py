@@ -33,6 +33,8 @@ def client():
     app_mod.app.config["DEV_MODE"] = True
     app_mod.cam.dev_mode = True
     with app_mod.app.test_client() as c:
+        # Tagalog is the results page's default; these tests read the English.
+        c.set_cookie("hc_lang", "en")
         yield c
 
 
@@ -613,6 +615,10 @@ def test_the_comparison_follows_weak_spots_not_the_mean(client):
         assert "Worse than the flight before" in page
         assert "15.0% of the block, up from 5.0%" in page
         assert "more of the block is reading healthy" not in page
+        # Only as a number for the technical team: a point or two of swing is
+        # within the noise, so the farmer view no longer calls it a verdict.
+        assert "Compared with last time" not in page
+        assert "vs previous flight" in page
     finally:
         store.delete_flight(newest["id"])
         store.delete_flight(older["id"])
@@ -694,3 +700,39 @@ def test_a_flight_says_where_its_date_came_from(client):
 
 def test_telemetry_reports_the_clock(client):
     assert "source" in client.get("/api/telemetry").get_json()["clock"]
+
+
+# ── flight results: language, the tapped square, the coloured photo ─────────
+
+def test_the_results_page_is_tagalog_unless_english_was_chosen(client):
+    store = app_mod.store
+    f = store.open_flight(name="wika")
+    store.update_flight(f["id"], {"status": "ok", "stats": {
+        "mean": 0.4, "healthy_pct": 99.0, "moderate_pct": 1.0,
+        "stressed_pct": 0.0}})
+    try:
+        client.delete_cookie("hc_lang")
+        page = client.get(f"/?flight={f['id']}").get_data(as_text=True)
+        assert "Ang lagay ngayon" in page and "Para sa technical team" in page
+        res = client.get(f"/lang/en?next=/?flight={f['id']}")
+        assert res.status_code == 302 and res.location.endswith(f"/?flight={f['id']}")
+        page = client.get(f"/?flight={f['id']}").get_data(as_text=True)
+        assert "How it looks today" in page
+    finally:
+        client.set_cookie("hc_lang", "en")
+        store.delete_flight(f["id"])
+
+
+def test_the_language_switch_only_returns_into_the_dashboard(client):
+    for bad in ("https://example.com/", "//example.com/"):
+        res = client.get("/lang/tl", query_string={"next": bad})
+        assert res.location in ("/", "http://localhost/")
+    client.set_cookie("hc_lang", "en")
+
+
+def test_a_photo_renders_in_the_legends_three_colours(client):
+    rec = client.post("/api/captures", json={"label": "bands"}).get_json()
+    res = client.get(f"/captures/{rec['id']}/bands.png")
+    assert res.status_code == 200
+    assert res.data[:8] == b"\x89PNG\r\n\x1a\n"
+    assert client.get("/captures/no-such-capture/bands.png").status_code == 404

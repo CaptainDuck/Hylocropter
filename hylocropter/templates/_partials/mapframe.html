@@ -13,23 +13,22 @@
          data-blocks='{{ blocks|tojson }}'></div>
 
     {% if flight %}
-      <div class="map-overlay-panel map-legend hc-noprint">
-        <span class="map-legend-title">Plant stress</span>
-        {% set s = flight.stats or {} %}
-        <div class="legend-row">
-          <span class="legend-swatch" style="background:var(--stress-healthy)"></span>
-          <span>Doing well</span>
-          <span class="legend-share">{{ '%.0f'|format(s.healthy_pct or 0) }}%</span>
-        </div>
-        <div class="legend-row">
-          <span class="legend-swatch" style="background:var(--stress-moderate)"></span>
-          <span>Keep an eye</span>
-          <span class="legend-share">{{ '%.0f'|format(s.moderate_pct or 0) }}%</span>
-        </div>
-        <div class="legend-row">
-          <span class="legend-swatch" style="background:var(--stress-stressed)"></span>
-          <span>Needs a look</span>
-          <span class="legend-share">{{ '%.0f'|format(s.stressed_pct or 0) }}%</span>
+      {# Counts squares, because squares are what the map paints. The share of
+         ground per colour is in the verdict card underneath. #}
+      {% set n = verdict.counts if verdict else {} %}
+      <div class="map-overlay-panel map-legend">
+        <span class="map-legend-title">{{ t('legend_title') }}</span>
+        {% for band in ('healthy', 'moderate', 'stressed') %}
+          <div class="legend-row" title="{{ t(band ~ '_mean') }}">
+            <span class="legend-swatch" style="background:var(--stress-{{ band }})"></span>
+            <span>{{ t(band) }}</span>
+            <span class="legend-share">{{ t('squares_n', n=n[band] or 0) }}</span>
+          </div>
+        {% endfor %}
+        <div class="legend-row" title="{{ t('none_mean') }}">
+          <span class="legend-swatch is-none"></span>
+          <span>{{ t('none') }}</span>
+          <span class="legend-share"></span>
         </div>
       </div>
     {% endif %}
@@ -52,24 +51,23 @@
       {% endif %}
 
       {% if flight %}
+        {# Squares first: they are in the legend's three colours. Photos use the
+           smooth scale, which is more detail but not the legend's colours. The
+           old smooth "Grid" view is gone -- at +0.39 it painted yellow under a
+           legend promising green. #}
         <div class="map-modes" role="group" aria-label="What to show">
-          <button class="map-mode is-active" data-mode="photos"
-                  title="Each photo drawn where it was taken">Photos</button>
-          <button class="map-mode" data-mode="smooth"
-                  title="Averaged into a grid">Grid</button>
-          <button class="map-mode" data-mode="bands"
-                  title="Three colours at your thresholds">Bands</button>
-          <button class="map-mode" data-mode="none"
-                  title="Satellite imagery only">Off</button>
+          <button class="map-mode is-active" data-mode="bands">{{ t('mode_squares') }}</button>
+          <button class="map-mode" data-mode="photos">{{ t('mode_photos') }}</button>
+          <button class="map-mode" data-mode="none">{{ t('mode_off') }}</button>
         </div>
         <label class="map-opacity">
-          <span>Fade</span>
+          <span>{{ t('fade') }}</span>
           <input type="range" id="map-opacity" min="0.15" max="1" step="0.05"
                  value="0.82" aria-label="Overlay opacity">
         </label>
         <label class="map-toggle">
-          <input type="checkbox" id="map-show-pins" checked>
-          <span>Photo pins &amp; track</span>
+          <input type="checkbox" id="map-show-pins">
+          <span>{{ t('pins') }}</span>
         </label>
       {% endif %}
 
@@ -149,7 +147,7 @@
   </div>
   <div class="map-hint" id="map-hint">
     {% if flight %}
-      Move over the field to check one spot. Scroll to zoom, drag to pan.
+      {{ t('map_hint') }}
     {% else %}
       Scroll to zoom, drag to pan. The dashed line is as far as the offline
       imagery goes.

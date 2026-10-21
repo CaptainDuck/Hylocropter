@@ -30,7 +30,19 @@
 </div>
 
 <div class="card elev-sm" style="background:var(--color-accent-2-100);margin-bottom:16px">
-  <div style="font-size:16px;line-height:1.5">{{ summary.plain }}</div>
+  {# Said in the legend's own three colours, at this photo's thresholds -- it
+     used to come from separate cut-offs on the mean, and could talk about red
+     patches in a photo that had none. #}
+  {% set s = r.stats or {} %}
+  <div style="font-size:16px;line-height:1.5">
+    {%- if s.mean is not none and s.healthy_pct is not none -%}
+      {{ t('photo_share', g='%.0f'|format(s.healthy_pct),
+           a='%.0f'|format(s.moderate_pct or 0), r='%.0f'|format(s.stressed_pct or 0)) }}
+    {%- else -%}
+      {{ t('no_reading') }}
+    {%- endif %}
+    {%- if not r.geo %} {{ t('no_gps') }}{% endif %}
+  </div>
   {% if r.exposure_check and r.exposure_check.level != 'ok' %}
     <div style="font-size:14px;color:var(--color-accent-800)">
       ⚠ {{ r.exposure_check.text }}</div>

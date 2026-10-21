@@ -331,7 +331,7 @@
   display: grid; gap: 16px; margin-top: 16px; align-items: start;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
 }
-.square-card { gap: 14px; }
+.square-card { gap: 14px; scroll-margin-top: 16px; }
 .square-head { display: flex; gap: 14px; align-items: flex-start; }
 .square-dot {
   width: 56px; height: 56px; flex: none; border-radius: 999px;

@@ -157,9 +157,9 @@
     const i = flagged.indexOf(p);
     tour = i >= 0 ? i : null;    // a tap on a flagged photo keeps the stepper
     select(p, 'tap');
-    if (window.matchMedia('(max-width: 760px)').matches) {
-      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+    // Take the farmer to the answer: the card sits below the map on every
+    // screen size, so a tap would otherwise seem to do nothing.
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 
   // Open on the first flagged photo; with none, on the lowest plant reading.

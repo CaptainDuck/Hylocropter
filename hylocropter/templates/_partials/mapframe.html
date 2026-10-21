@@ -13,23 +13,18 @@
          data-blocks='{{ blocks|tojson }}'></div>
 
     {% if flight %}
-      {# Counts squares, because squares are what the map paints. The share of
-         ground per colour is in the verdict card underneath. #}
-      {% set n = verdict.counts if verdict else {} %}
-      <div class="map-overlay-panel map-legend">
+      <div class="map-overlay-panel map-legend hc-noprint">
         <span class="map-legend-title">{{ t('legend_title') }}</span>
-        {% for band in ('healthy', 'moderate', 'stressed') %}
-          <div class="legend-row" title="{{ t(band ~ '_mean') }}">
-            <span class="legend-swatch" style="background:var(--stress-{{ band }})"></span>
-            <span>{{ t(band) }}</span>
-            <span class="legend-share">{{ t('squares_n', n=n[band] or 0) }}</span>
-          </div>
-        {% endfor %}
-        <div class="legend-row" title="{{ t('none_mean') }}">
-          <span class="legend-swatch is-none"></span>
-          <span>{{ t('none') }}</span>
-          <span class="legend-share"></span>
+        {# A key to the heatmap's own smooth colours (BNDVI_COLOR_STOPS, -0.2
+           to +0.8), not shares of the flight: a percentage of "green" counted
+           at the 0.30 line sat under a map that was mostly yellow. #}
+        <div class="legend-ramp" aria-hidden="true"></div>
+        <div class="legend-ends"><span>{{ t('legend_weak') }}</span><span>{{ t('legend_strong') }}</span></div>
+        <div class="legend-row">
+          <span class="legend-swatch is-flag"></span>
+          <span>{{ t('legend_flag') }}</span>
         </div>
+        <span class="legend-note">{{ t('legend_note') }}</span>
       </div>
     {% endif %}
 
@@ -51,22 +46,13 @@
       {% endif %}
 
       {% if flight %}
-        {# Squares first: they are in the legend's three colours. Photos use the
-           smooth scale, which is more detail but not the legend's colours. The
-           old smooth "Grid" view is gone -- at +0.39 it painted yellow under a
-           legend promising green. #}
-        <div class="map-modes" role="group" aria-label="What to show">
-          <button class="map-mode is-active" data-mode="bands">{{ t('mode_squares') }}</button>
-          <button class="map-mode" data-mode="photos">{{ t('mode_photos') }}</button>
-          <button class="map-mode" data-mode="none">{{ t('mode_off') }}</button>
-        </div>
         <label class="map-opacity">
           <span>{{ t('fade') }}</span>
           <input type="range" id="map-opacity" min="0.15" max="1" step="0.05"
                  value="0.82" aria-label="Overlay opacity">
         </label>
         <label class="map-toggle">
-          <input type="checkbox" id="map-show-pins">
+          <input type="checkbox" id="map-show-pins" checked>
           <span>{{ t('pins') }}</span>
         </label>
       {% endif %}

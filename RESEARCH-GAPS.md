@@ -666,6 +666,40 @@ field).
 
 ---
 
+## 13. 🟡 Which photos to check: the crown rule and the outlier rule are judgement calls
+
+**Status: implemented, tuned on our own seven flights, not field-validated.**
+
+The farmer view used to judge a photo by its mean BNDVI. On the 13 Oct flight a
+photo's mean tracks how much soil is in frame at r = −0.97: soil reads +0.34 to
++0.39 and canopy +0.44 and up, so "lowest 25% by mean" picks the dirtiest photos,
+not the weakest plants. And because the healthy line (0.30) sits below the soil,
+"97% green" was mostly soil — under a heatmap that was mostly yellow.
+
+The verdict now looks at the plants only, two ways (`flights.verdict`):
+
+- **Orange or red on the crown.** The crown is the brightest tenth of the frame
+  in NIR (`bndvi.CROWN_PERCENTILE = 90`); a photo is flagged when ≥ 1% of it reads
+  below the healthy line (`flights.CROWN_WEAK_MIN_PCT = 1.0`). Measured: healthy
+  flights 0.1% or less per photo; 9 Oct 2.5% typical, 16% worst.
+- **Plants weaker than the rest of the flight.** Each photo's 90th-percentile
+  BNDVI (`p90`) against the flight's median, flagged below median − 3 × spread,
+  spread = MAD × 1.4826 but never under 0.015 (`OUTLIER_SPREADS`,
+  `OUTLIER_FLOOR`). Within-flight, so k and exposure cancel. Flags nothing on any
+  of our flights so far.
+
+**Caveats to state in the writeup:**
+
+- On 9 Oct every photo had NIR clipped at 255 (3200 µs, gain 1.7), and clipped
+  crown pixels read +0.36 against +0.44 for the rest of the crown — 27% of them
+  orange. So some of that flight's orange is exposure, not the plant. The farmer
+  view flags it regardless (it is what they see); the technical card says why.
+- "Brightest in NIR" is crown on our photos, but a pale stone or a sack would
+  qualify too. 30 Sep 12:11 photo 7's orange spot may be one.
+- 1%, 3 × spread and the 0.015 floor were picked by looking at seven flights of
+  one block. Objective 4's field check — walk the flagged photos, record what is
+  there — is what turns them into numbers.
+
 ## Suggested order of attack
 
 | # | Task | Where | Effort |

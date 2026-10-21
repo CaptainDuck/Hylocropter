@@ -6,7 +6,18 @@
       <img src="{{ url_for('captures_file', filename=c.files.thumb) }}"
            alt="False-colour stress view for capture {{ c.id }}" loading="lazy">
     {% endif %}
-    {{ band_tag(c.classification if not c.files_purged else 'failed') }}
+    {# On a flight's results the tag says what the verdict says about the
+       photo's plants; elsewhere it is still the mean's band. #}
+    {% if flagged_ids is defined and flagged_ids is not none and not c.files_purged
+          and c.stats and c.stats.mean is not none %}
+      {% if c.id in flagged_ids %}
+        <span class="tag tag-moderate">{{ t('flagged_name') }}</span>
+      {% else %}
+        <span class="tag tag-healthy">{{ t('healthy') }}</span>
+      {% endif %}
+    {% else %}
+      {{ band_tag(c.classification if not c.files_purged else 'failed') }}
+    {% endif %}
   </div>
   <div class="thumb-time">
     {{ c.timestamp[11:16] }}

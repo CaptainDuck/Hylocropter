@@ -181,6 +181,23 @@ def checks(flight, captures, history, cfg, tile_areas=(), blocks=()):
                         "detail": f"Brightest NIR pixels peak around "
                                   f"{median_peak:.0f} of 255."})
 
+    # ── overexposure ────────────────────────────────────────────────────
+    clipped = [c for c in readings
+               if (c.get("channels") or {}).get("nir_max", 0) >= bndvi.SATURATED]
+    if clipped:
+        s0 = (clipped[0].get("settings") or {})
+        detail = (f"{len(clipped)} of {len(readings)} photos have NIR clipped at "
+                  f"255 ({s0.get('exposure_us', '?')} µs, gain "
+                  f"{s0.get('gain', '?')}), on the brightest crowns. Where NIR "
+                  "clips and blue doesn't, BNDVI reads lower than it should, so "
+                  "some orange on those crowns may be exposure rather than the "
+                  "plant. The farmer view flags it anyway; lower the exposure or "
+                  "gain next flight so it can be told apart.")
+        out.append({"level": "warn",
+                    "title": {"tl": "Sobrang liwanag ng mga litrato",
+                              "en": "Photos are overexposed"},
+                    "detail": detail})
+
     # ── thresholds ──────────────────────────────────────────────────────
     t = flight.get("thresholds") or {}
     if (t.get("healthy"), t.get("moderate")) == (

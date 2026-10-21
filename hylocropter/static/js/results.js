@@ -1,31 +1,35 @@
-/* The tapped square, explained.
+/* The tapped photo, explained.
  *
- * map.js sends hc:cell-pick when a square is tapped; this fills the panel under
- * the map with what that square means -- its colour's name and what to do about
- * it, how many photos it averages, and the photo taken nearest its centre --
- * then answers hc:cell-selected so the map rings it. The page opens on the
- * lowest-reading square, because that is where a walk should start.
+ * Each photo is a patch of the heatmap. map.js sends hc:photo-pick when one is
+ * tapped (or its pin is); this fills the card under the map with what that
+ * photo's *plants* say -- not the soil between them, which reads yellow on
+ * every flight -- and answers hc:photo-selected so the map rings the patch.
  *
- * Everything comes from data the page already has (flights.grid_cells() and
- * the map's pins); nothing here asks the server for anything but the photo.
+ * A photo is flagged (flights.verdict) for orange or red on its crown, or for
+ * plants reading clearly weaker than the rest of the flight. The page opens on
+ * the first flagged photo, and the verdict's "go through them" button steps
+ * through the rest; with nothing flagged it opens on the lowest plant reading
+ * and says that is still normal.
+ *
+ * Everything comes from the map's pins; nothing here asks the server for
+ * anything but the image.
  */
 (function () {
   'use strict';
 
   const panel = document.getElementById('square-panel');
   const strEl = document.getElementById('results-strings');
-  if (!panel || !strEl) return;
+  const host = document.getElementById('plot-map');
+  if (!panel || !strEl || !host) return;
 
   const S = JSON.parse(strEl.textContent);
-  const cells = JSON.parse(panel.dataset.cells || '[]');
-  const cellM = JSON.parse(panel.dataset.cellM || 'null');
-  const cols = parseInt(panel.dataset.cols, 10) || 14;
-  const host = document.getElementById('plot-map');
-  const pins = host ? JSON.parse(host.dataset.pins || '[]') : [];
-  const pinById = {};
-  pins.forEach(function (p) { pinById[p.id] = p; });
+  const pins = JSON.parse(host.dataset.pins || '[]');
+  const flaggedIds = JSON.parse(panel.dataset.flagged || '[]');
+  const byId = {};
+  pins.forEach(function (p) { byId[p.id] = p; });
+  const flagged = flaggedIds.map(function (id) { return byId[id]; })
+    .filter(Boolean);
 
-  const BG = { healthy: '#2f8f3e', moderate: '#e0a020', stressed: '#c1442e' };
   const $ = function (id) { return document.getElementById(id); };
 
   function say(key, vars) {
@@ -35,116 +39,138 @@
     });
     return text;
   }
-  function sayN(key, n, vars) {
-    vars = Object.assign({ n: n }, vars);
-    return say(n === 1 && S[key + '_one'] ? key + '_one' : key, vars);
+  /** A share that is there but rounds to nothing still has to read as there. */
+  function share(v) {
+    if (v === null || v === undefined) return '?';
+    return v > 0 && v < 0.1 ? '<0.1' : (Math.round(v * 10) / 10);
   }
-  function fmt(v) { return (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(2); }
   /** '15:18:53' -> '3:18:53 PM', the way the page header says the time. */
   function clock12(hms) {
     const h = parseInt(hms, 10);
     if (isNaN(h)) return hms;
     return ((h % 12) || 12) + hms.slice(2) + (h < 12 ? ' AM' : ' PM');
   }
+  function has(v) { return v !== null && v !== undefined; }
 
-  let photoView = 'bands';
+  let photoView = 'heatmap';
   let current = null;
+  let tour = null;        // index into `flagged` while stepping through them
 
-  function show(index, why) {
-    current = index;
-    const c = cells[index];
-    const row = (index / cols | 0) + 1, col = index % cols + 1;
-    $('sq-where').textContent = say('where', { r: row, c: col });
-    $('sq-kicker').textContent = why === 'worst' ? say('start_here') : '';
-    $('sq-kicker').hidden = why !== 'worst';
-    $('sq-hint').textContent = why === 'worst' ? say('worst_hint') : '';
-    $('sq-hint').hidden = why !== 'worst';
+  function show(p, why) {
+    current = p;
+    const kicker = why === 'first' ? say('start_here')
+      : (why === 'lowest' ? say('lowest_kicker') : '');
+    $('sq-kicker').textContent = kicker;
+    $('sq-kicker').hidden = !kicker;
+    const hint = why === 'first' ? say('worst_hint')
+      : (why === 'lowest' ? say('lowest_hint') : '');
+    $('sq-hint').textContent = hint;
+    $('sq-hint').hidden = !hint;
 
-    const dot = $('sq-dot');
-    if (!c) {
-      dot.className = 'square-dot is-none';
-      dot.style.background = '';
-      $('sq-short').textContent = '—';
-      $('sq-name').textContent = say('no_photo_name');
-      $('sq-mean').textContent = say('no_photo_mean');
-      $('sq-detail').textContent = '';
-      $('sq-patch').hidden = true;
-      $('sq-photo').hidden = true;
-      return;
-    }
-    dot.className = 'square-dot is-' + c.band;
-    dot.style.background = BG[c.band];
-    $('sq-short').textContent = fmt(c.mean);
-    $('sq-name').textContent = say(c.band);
-    $('sq-mean').textContent = say(c.band + '_mean');
-    $('sq-detail').textContent = sayN('cell_detail', c.photos, {
-      w: cellM ? cellM[0] : '?', h: cellM ? cellM[1] : '?', v: fmt(c.mean)
+    $('sq-where').textContent = say('where', {
+      n: p.number || '?', time: clock12(p.seconds || p.time)
     });
+    const measured = has(p.mean);
+    const dot = $('sq-dot');
+    dot.className = 'square-dot is-' + (!measured ? 'none' : (p.flag ? 'moderate' : 'healthy'));
+    dot.style.background = !measured ? '' : (p.flag ? '#e0a020' : '#2f8f3e');
+    // What got it flagged, not a BNDVI figure: "+0.44" beside "worth a look"
+    // reads as healthy and contradicts the label.
+    $('sq-short').textContent = !measured ? '—'
+      : (has(p.crown_weak) ? share(p.crown_weak) + '%' : '');
+    $('sq-name').textContent = !measured ? say('no_reading')
+      : (p.flag ? say('flagged_name') : say('healthy'));
+    $('sq-mean').textContent = !measured ? ''
+      : say(p.flag ? 'moderate_mean' : 'healthy_mean');
+    $('sq-detail').textContent = p.footprint && measured
+      ? say('cell_detail', {
+        w: Math.round(p.footprint.width_m), h: Math.round(p.footprint.height_m),
+        alt: has(p.alt) ? Number(p.alt).toFixed(1) : '?'
+      })
+      : '';
 
-    // A green average can hide a red corner. Say so when the photos in a
-    // square that isn't red themselves hold a real share of weaker ground.
-    const patch = $('sq-patch');
-    const weak = c.band === 'healthy'
-      ? (c.stressed_pct >= 5 ? ['stressed', c.stressed_pct]
-        : (c.moderate_pct >= 10 ? ['moderate', c.moderate_pct] : null))
-      : null;
-    patch.hidden = !weak;
-    if (weak) {
-      patch.textContent = say('cell_patches', {
-        pct: Math.round(weak[1]), band: say(weak[0]).toLowerCase()
-      });
-    }
-
-    const p = pinById[c.photo];
-    $('sq-photo').hidden = !p;
-    if (p) {
-      paintPhoto(p);
-      $('sq-photo-meta').textContent = say('photo_meta', {
-        n: p.number || '?', time: clock12(p.seconds || p.time),
-        alt: p.alt !== null && p.alt !== undefined ? Number(p.alt).toFixed(1) : '?',
-        v: p.mean !== null ? fmt(p.mean) : '—',
-        g: p.healthy_pct !== null && p.healthy_pct !== undefined
-          ? Math.round(p.healthy_pct) : '?'
-      });
-      $('sq-open').href = '/capture/' + p.id;
-    }
+    const why2 = [];
+    if (has(p.crown_weak)) why2.push(say('photo_crown', { w: share(p.crown_weak) }));
+    if (p.weaker) why2.push(say('photo_weaker'));
+    $('sq-share').textContent = why2.join(' ');
+    $('sq-open').href = '/capture/' + p.id;
+    paintPhoto(p);
+    paintTour();
   }
 
   function paintPhoto(p) {
     const raw = photoView === 'raw' && p.raw;
-    $('sq-img').src = raw ? p.raw : p.bands;
+    // The heatmap thumbnail: the same image as the full false-colour PNG, at
+    // about the width this card shows it -- 14 KB instead of 10 MB per tap over
+    // the Pi's hotspot. "Open the photo" has the full size.
+    $('sq-img').src = raw ? p.raw : (p.thumb || p.falsecolor);
     $('sq-photo-note').textContent = say(raw ? 'raw_note' : 'photo_note');
     panel.querySelectorAll('.photo-switch button').forEach(function (b) {
-      b.classList.toggle('is-active', b.dataset.view === (raw ? 'raw' : 'bands'));
+      b.classList.toggle('is-active', b.dataset.view === (raw ? 'raw' : 'heatmap'));
     });
+  }
+
+  function paintTour() {
+    const bar = $('sq-tour');
+    bar.hidden = tour === null;
+    if (tour === null) return;
+    const many = flagged.length > 1;
+    $('sq-tour-prev').hidden = !many;
+    $('sq-tour-next').hidden = !many;
+    $('sq-tour-text').textContent = say('tour', { i: tour + 1, n: flagged.length });
   }
 
   panel.querySelectorAll('.photo-switch button').forEach(function (b) {
     b.addEventListener('click', function () {
       photoView = b.dataset.view;
-      const c = cells[current];
-      if (c && pinById[c.photo]) paintPhoto(pinById[c.photo]);
+      if (current) paintPhoto(current);
     });
   });
 
-  function select(index, why, reveal) {
-    show(index, why);
-    document.dispatchEvent(new CustomEvent('hc:cell-selected', {
-      detail: { index: index, reveal: !!reveal }
+  function select(p, why, reveal) {
+    show(p, why);
+    document.dispatchEvent(new CustomEvent('hc:photo-selected', {
+      detail: { id: p.id, reveal: !!reveal }
     }));
   }
 
-  document.addEventListener('hc:cell-pick', function (e) {
-    select(e.detail.index, 'tap');
+  function step(by) {
+    if (!flagged.length) return;
+    tour = tour === null ? 0 : (tour + by + flagged.length) % flagged.length;
+    select(flagged[tour], tour === 0 && by === 0 ? 'first' : 'tour', true);
+  }
+
+  $('sq-tour-next').addEventListener('click', function () { step(1); });
+  $('sq-tour-prev').addEventListener('click', function () { step(-1); });
+  const go = $('show-flagged');
+  if (go) {
+    go.addEventListener('click', function () {
+      tour = null;
+      step(0);
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
+  document.addEventListener('hc:photo-pick', function (e) {
+    const p = byId[e.detail.id];
+    if (!p) return;
+    const i = flagged.indexOf(p);
+    tour = i >= 0 ? i : null;    // a tap on a flagged photo keeps the stepper
+    select(p, 'tap');
     if (window.matchMedia('(max-width: 760px)').matches) {
       panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   });
 
-  // Open on the lowest-reading square.
-  let worst = null;
-  cells.forEach(function (c, i) {
-    if (c && (worst === null || c.mean < cells[worst].mean)) worst = i;
-  });
-  if (worst !== null) select(worst, 'worst', true);
+  // Open on the first flagged photo; with none, on the lowest plant reading.
+  if (flagged.length) {
+    step(0);
+  } else {
+    let low = null;
+    pins.forEach(function (p) {
+      const v = has(p.plant) ? p.plant : p.mean;
+      if (has(v) && (low === null || v < (has(low.plant) ? low.plant : low.mean))) low = p;
+    });
+    if (low) select(low, 'lowest');
+  }
 }());

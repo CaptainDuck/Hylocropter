@@ -115,6 +115,41 @@ DEFAULT_THRESHOLD_MODERATE = 0.1
 # setting, and RESEARCH-GAPS.md section 11.
 DEFAULT_MIN_SIGNAL = 20
 
+# Which percentile of a frame's BNDVI is reported as its plant reading (`p90`
+# in the stats): high enough to be canopy rather than soil in a frame that is
+# mostly ground, low enough not to be a handful of glints. A judgement call,
+# like min_signal -- RESEARCH-GAPS.md §13.
+PLANT_PERCENTILE = 90
+
+# The crown: the brightest tenth of a frame in NIR. Plants reflect NIR strongly
+# and soil doesn't, so this picks out canopy whatever the exposure. What share
+# of it reads below the healthy line is what the farmer sees as orange or red
+# on the plants themselves, rather than on the ground between them.
+CROWN_PERCENTILE = 90
+
+# A channel at or above this has hit the top of the sensor (the technical
+# card's overexposure check).
+SATURATED = 254
+
+
+def crown_stats(bndvi, nir, threshold_healthy=DEFAULT_THRESHOLD_HEALTHY,
+                mask=None):
+    """How much of the crown reads below the healthy line.
+
+    `nir` is the NIR (red Bayer) channel of the same frame. Returns
+    ``{"crown_weak_pct", "crown_median"}``, or Nones when nothing is left.
+    """
+    valid = np.ones(bndvi.shape, bool) if mask is None else ~mask
+    if not valid.any():
+        return {"crown_weak_pct": None, "crown_median": None}
+    level = np.percentile(nir[valid], CROWN_PERCENTILE)
+    crown = valid & (nir >= level)
+    v = bndvi[crown]
+    if not v.size:
+        return {"crown_weak_pct": None, "crown_median": None}
+    return {"crown_weak_pct": float(np.mean(v <= threshold_healthy) * 100),
+            "crown_median": float(np.median(v))}
+
 # How long to let the camera's own AE and AWB settle before reading back what
 # they chose. Six seconds is generous: the AGC converges in about two, and the
 # cost of being slow here is nothing next to pinning a half-converged exposure.
@@ -885,14 +920,20 @@ def bndvi_stats(bndvi, threshold_healthy=DEFAULT_THRESHOLD_HEALTHY,
         # inventing a number -- np.mean of an empty array is nan and would
         # propagate into the record, the map and the classification.
         return {"min": None, "max": None, "mean": None, "median": None,
-                "std": None, "healthy_pct": 0.0, "moderate_pct": 0.0,
-                "stressed_pct": 0.0, "masked_pct": masked_pct}
+                "std": None, "p90": None, "healthy_pct": 0.0,
+                "moderate_pct": 0.0, "stressed_pct": 0.0,
+                "masked_pct": masked_pct}
     return {
         "min": float(np.min(valid)),
         "max": float(np.max(valid)),
         "mean": float(np.mean(valid)),
         "median": float(np.median(valid)),
         "std": float(np.std(valid)),
+        # The plant reading: the 90th percentile. The mean is mostly a measure
+        # of how much soil is in frame (r = -0.97 on the 13 Oct flight), because
+        # soil reads +0.34-0.39 against the canopy's +0.44 and up. The top tenth
+        # of the frame is canopy, so this follows the plants instead.
+        "p90": float(np.percentile(valid, PLANT_PERCENTILE)),
         "healthy_pct": float(np.mean(valid > threshold_healthy) * 100),
         "moderate_pct": float(np.mean((valid >= threshold_moderate)
                                       & (valid <= threshold_healthy)) * 100),
@@ -1266,6 +1307,7 @@ def capture_and_analyse(
     if dng_name:
         files["dng"] = dng_name
     stats = bndvi_stats(bndvi, threshold_healthy, threshold_moderate, mask=mask)
+    stats.update(crown_stats(bndvi, rgb[:, :, 0], threshold_healthy, mask=mask))
 
     return {
         "id": capture_id,

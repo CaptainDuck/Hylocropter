@@ -268,12 +268,10 @@ def test_a_flight_with_no_gps_still_produces_stats_but_no_map():
     assert bounds is None
     assert grid["covered"] == 0
     assert stats["mean"] == pytest.approx(0.4)
-    # No squares to count, so the verdict falls back to the mean -- at the same
-    # thresholds as the legend -- and says that is what it did.
-    v = flights.verdict(flights.grid_cells(caps, bounds, 0.3, 0.1), stats,
-                        {"healthy": 0.3, "moderate": 0.1})
-    assert v == {"level": "healthy", "basis": "mean", "covered": 0,
-                 "counts": {"healthy": 0, "moderate": 0, "stressed": 0}}
+    # Placement is missing, the readings are not: the verdict counts photos,
+    # so it still has something to say.
+    v = flights.verdict(caps, {"healthy": 0.3, "moderate": 0.1})
+    assert v["level"] == "healthy" and v["covered"] == 2
 
 
 # ── mission planning ────────────────────────────────────────────────────────
@@ -545,77 +543,40 @@ def test_a_square_practice_area_still_picks_a_line_direction():
     assert plan["line_direction"] in ("east–west", "north–south")
 
 
-# ── plain-language verdict, per square ───────────────────────────────────────
+# ── plain-language verdict, per photo ────────────────────────────────────────
 #
 # The verdict used to come from its own cut-offs on the mean (0.38 / 0.22) while
 # the map used the flight's thresholds (0.30 / 0.10). On 9 Oct that told a farmer
-# to "walk the red patches" on a flight with nothing red. It now counts the
-# squares the map paints.
+# to "walk the red patches" on a flight with nothing red. It now puts each photo
+# in a band at the flight's thresholds -- the same unit the farmer taps.
 
-def _grid_caps():
-    """Three squares: one comfortably green, one amber, one green at +0.37 --
-    the 9 Oct mean that the old summary called a problem."""
-    return [_capture("a", 14.13050, 121.08200, 0.45),
-            _capture("b", 14.13050, 121.08300, 0.20),
-            _capture("c", 14.13100, 121.08250, 0.37),
-            _capture("d", 14.13100, 121.08250, 0.37)]
+TH = {"healthy": 0.3, "moderate": 0.1}
 
 
-def _grid_bounds():
-    return {"south": 14.1300, "west": 121.0815, "north": 14.1315,
-            "east": 121.0835}
-
-
-def test_grid_cells_agree_with_the_grid():
-    caps = _grid_caps()
-    bounds = _grid_bounds()
-    grid = flights.build_grid(caps, bounds, 0.3, 0.1)
-    cells = flights.grid_cells(caps, bounds, 0.3, 0.1)
-    assert len(cells) == len(grid["cells"])
-    for g, c in zip(grid["cells"], cells):
-        assert (g is None) == (c is None)
-        if c:
-            assert c["mean"] == g
-    shared = next(c for c in cells if c and c["photos"] == 2)
-    assert shared["band"] == "healthy" and shared["photo"] in ("c", "d")
-
-
-def test_an_unvisited_square_stays_empty_in_the_details_too():
-    cells = flights.grid_cells(_grid_caps(), _grid_bounds(), 0.3, 0.1)
-    assert sum(1 for c in cells if c) == 3
-    assert cells.count(None) == len(cells) - 3
-
-
-def test_the_verdict_is_the_worst_square():
-    cells = flights.grid_cells(_grid_caps(), _grid_bounds(), 0.3, 0.1)
-    v = flights.verdict(cells)
-    assert v["level"] == "moderate" and v["basis"] == "squares"
+def test_the_verdict_is_the_worst_photo():
+    caps = [_capture("a", 0, 0, 0.45), _capture("b", 0, 0, 0.20),
+            _capture("c", 0, 0, 0.37)]
+    v = flights.verdict(caps, TH)
+    assert v["level"] == "moderate" and v["covered"] == 3
     assert v["counts"] == {"healthy": 2, "moderate": 1, "stressed": 0}
 
 
 def test_a_flight_at_037_with_nothing_red_is_not_told_to_walk_red_patches():
-    """F-20261009-1603: mean +0.37, 0% stressed. Every square is green at the
+    """F-20261009-1603: mean +0.37, 0% stressed. Every photo is above the
     flight's own 0.30 line, so the verdict is green."""
-    caps = [c for c in _grid_caps() if c["id"] in ("c", "d")]
-    v = flights.verdict(flights.grid_cells(caps, _grid_bounds(), 0.3, 0.1))
-    assert v["level"] == "healthy"
+    caps = [_capture(c, 0, 0, 0.37) for c in "abc"]
+    assert flights.verdict(caps, TH)["level"] == "healthy"
 
 
 def test_the_verdict_follows_the_flights_own_thresholds():
-    caps = [c for c in _grid_caps() if c["id"] in ("c", "d")]
-    strict = flights.grid_cells(caps, _grid_bounds(), 0.40, 0.30)
-    assert flights.verdict(strict)["level"] == "moderate"
+    caps = [_capture(c, 0, 0, 0.37) for c in "ab"]
+    assert flights.verdict(caps, {"healthy": 0.40, "moderate": 0.30})["level"] == "moderate"
 
 
-def test_a_flight_with_nothing_measured_has_no_verdict():
-    assert flights.verdict([None] * 4)["level"] is None
-
-
-def test_cell_size_is_the_bounds_split_into_the_grid():
-    w, h = flights.cell_size_m(_grid_bounds())
-    assert w == pytest.approx(
-        0.002 * flights.m_per_deg_lon(14.13075) / flights.GRID_COLS, rel=1e-6)
-    assert h == pytest.approx(0.0015 * flights.M_PER_DEG_LAT / flights.GRID_ROWS)
+def test_a_photo_that_measured_nothing_is_not_counted():
+    caps = [_capture("a", 0, 0, 0.45), _capture("b", 0, 0, None)]
+    assert flights.verdict(caps, TH)["covered"] == 1
+    assert flights.verdict([_capture("b", 0, 0, None)], TH)["level"] is None
 
 
 # ── compared with last time ──────────────────────────────────────────────────
@@ -1038,3 +999,70 @@ def test_the_top_of_a_photo_is_the_heading_plus_the_camera_turn():
     fp = flights.footprint({"lat": 0, "lon": 0, "rel_alt_m": 10, **geo},
                            camera_rotation_deg=270)
     assert fp["image_up_deg"] == 132.0
+
+
+# ── which photos to check: plants, not soil ─────────────────────────────────
+#
+# A photo's mean mostly measures how much soil is in frame (r = -0.97 on 13 Oct),
+# so the verdict looks at the plants: orange or red on the crown, and plants
+# reading clearly weaker than the rest of the same flight.
+
+def _plant(cid, p90, crown=0.0, mean=0.38):
+    c = _capture(cid, 0, 0, mean)
+    c["stats"].update({"p90": p90, "crown_weak_pct": crown})
+    return c
+
+
+def test_an_even_healthy_flight_flags_nothing():
+    caps = [_plant(f"c{i}", 0.44 + (i % 3) * 0.005) for i in range(20)]
+    v = flights.verdict(caps, TH)
+    assert v["level"] == "healthy" and v["basis"] == "outliers"
+    assert v["flagged"] == []
+
+
+def test_orange_on_a_crown_flags_that_photo():
+    caps = [_plant(f"c{i}", 0.44) for i in range(20)]
+    caps[3] = _plant("c3", 0.44, crown=16.0)
+    caps[7] = _plant("c7", 0.44, crown=2.5)
+    v = flights.verdict(caps, TH)
+    assert v["level"] == "moderate" and v["flagged"] == ["c3", "c7"]
+    assert not v["widespread"]
+
+
+def test_a_specks_worth_of_orange_does_not_flag():
+    """Healthy flights carry 0.1% or so on the crown -- below the 1% line."""
+    caps = [_plant(f"c{i}", 0.44, crown=0.2) for i in range(20)]
+    assert flights.verdict(caps, TH)["flagged"] == []
+
+
+def test_plants_clearly_weaker_than_the_rest_are_flagged():
+    caps = [_plant(f"c{i}", 0.44) for i in range(20)]
+    caps[5] = _plant("c5", 0.36)
+    out = flights.plant_outliers(caps)
+    assert out["flagged"] == ["c5"]
+    assert flights.verdict(caps, TH)["weaker"] == ["c5"]
+
+
+def test_the_spread_has_a_floor():
+    """On a very even flight the MAD is tiny; 0.01 below typical is not news."""
+    caps = [_plant(f"c{i}", 0.440) for i in range(20)]
+    caps[0] = _plant("c0", 0.430)
+    assert flights.plant_outliers(caps)["flagged"] == []
+
+
+def test_most_of_the_block_flagged_is_said_as_the_whole_block():
+    caps = [_plant(f"c{i}", 0.44, crown=3.0 if i < 12 else 0.0) for i in range(20)]
+    assert flights.verdict(caps, TH)["widespread"]
+
+
+def test_everything_down_together_is_not_missed():
+    """Nothing stands out when every plant is weak; the typical reading says so."""
+    caps = [_plant(f"c{i}", 0.25) for i in range(20)]
+    v = flights.verdict(caps, TH)
+    assert v["basis"] == "low" and v["level"] == "moderate"
+
+
+def test_too_few_photos_still_checks_the_crowns():
+    caps = [_plant("a", 0.44), _plant("b", 0.44, crown=5.0)]
+    v = flights.verdict(caps, TH)
+    assert v["basis"] == "few" and v["flagged"] == ["b"]

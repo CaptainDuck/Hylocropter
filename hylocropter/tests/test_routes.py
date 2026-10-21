@@ -729,10 +729,3 @@ def test_the_language_switch_only_returns_into_the_dashboard(client):
         assert res.location in ("/", "http://localhost/")
     client.set_cookie("hc_lang", "en")
 
-
-def test_a_photo_renders_in_the_legends_three_colours(client):
-    rec = client.post("/api/captures", json={"label": "bands"}).get_json()
-    res = client.get(f"/captures/{rec['id']}/bands.png")
-    assert res.status_code == 200
-    assert res.data[:8] == b"\x89PNG\r\n\x1a\n"
-    assert client.get("/captures/no-such-capture/bands.png").status_code == 404

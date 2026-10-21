@@ -25,21 +25,28 @@
       <p class="page-sub text-muted" style="font-size:12.5px">{{ r.clock|clock_note }}</p>
     {% endif %}
   </div>
-  {{ band_tag(r.classification, 'style="font-size:14px;padding:7px 16px"') }}
+  {# Same rule as the flight's results: orange or red on the plants is worth a
+     look; the mean's band would call a photo with an orange crown healthy. #}
+  {% set cw = (r.stats or {}).get('crown_weak_pct') %}
+  {% if cw is not none %}
+    <span class="tag {{ 'tag-moderate' if cw >= crown_min else 'tag-healthy' }}"
+          style="font-size:14px;padding:7px 16px">
+      {{- t('flagged_name') if cw >= crown_min else t('healthy') -}}</span>
+  {% else %}
+    {{ band_tag(r.classification, 'style="font-size:14px;padding:7px 16px"') }}
+  {% endif %}
   <button class="btn btn-secondary hc-noprint" onclick="window.print()">Save as PDF</button>
 </div>
 
 <div class="card elev-sm" style="background:var(--color-accent-2-100);margin-bottom:16px">
-  {# Said in the legend's own three colours, at this photo's thresholds -- it
-     used to come from separate cut-offs on the mean, and could talk about red
-     patches in a photo that had none. #}
+  {# About the plants only: the soil between them reads yellow on every flight,
+     and a "% green" counted at the 0.30 line sat under a mostly yellow image. #}
   {% set s = r.stats or {} %}
   <div style="font-size:16px;line-height:1.5">
-    {%- if s.mean is not none and s.healthy_pct is not none -%}
-      {{ t('photo_share', g='%.0f'|format(s.healthy_pct),
-           a='%.0f'|format(s.moderate_pct or 0), r='%.0f'|format(s.stressed_pct or 0)) }}
-    {%- else -%}
+    {%- if s.mean is none -%}
       {{ t('no_reading') }}
+    {%- elif s.crown_weak_pct is defined and s.crown_weak_pct is not none -%}
+      {{ t('photo_crown', w=('<0.1' if 0 < s.crown_weak_pct < 0.1 else '%.1f'|format(s.crown_weak_pct))) }}
     {%- endif %}
     {%- if not r.geo %} {{ t('no_gps') }}{% endif %}
   </div>

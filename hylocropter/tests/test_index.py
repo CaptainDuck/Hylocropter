@@ -503,3 +503,27 @@ def test_the_capture_format_is_the_one_that_actually_yields_rgb():
     while the real camera was inverted. So this pins the string.
     """
     assert bndvi.CAPTURE_ARRAY_FORMAT == "BGR888"
+
+
+# ── the crown: what the plants say, not the soil ────────────────────────────
+
+def test_crown_is_the_brightest_tenth_in_nir():
+    nir = np.zeros((10, 10))
+    nir[0, :] = 200                       # one bright row: the plant
+    b = np.full((10, 10), 0.40)           # soil and plant both above the line...
+    b[0, :3] = 0.20                       # ...except three orange crown pixels
+    s = bndvi.crown_stats(b, nir, 0.30)
+    assert s["crown_weak_pct"] == pytest.approx(30.0)
+
+
+def test_soil_below_the_line_does_not_count_against_the_crown():
+    nir = np.zeros((10, 10))
+    nir[0, :] = 200
+    b = np.full((10, 10), 0.20)           # weak-reading soil everywhere
+    b[0, :] = 0.45                        # healthy crown
+    assert bndvi.crown_stats(b, nir, 0.30)["crown_weak_pct"] == 0.0
+
+
+def test_stats_carry_the_plant_reading():
+    b = np.linspace(0, 1, 101)
+    assert bndvi.bndvi_stats(b)["p90"] == pytest.approx(0.9)

@@ -1,22 +1,20 @@
 /* Farm map.
  *
- * Three ways of looking at the same flight:
- *
- *   Squares — the flight averaged into 14x9 squares, each in the legend's three
- *             flat colours at the flight's thresholds, and hatched where no
- *             photo landed. The default, because it is what the verdict counts
- *             and what a tap explains (results.js): "which square do I walk to".
- *   Photos  — every capture's false-colour image drawn at the patch of ground it
- *             actually covers, rotated to the heading the drone was flying. Full
- *             detail, but on the smooth colour scale rather than the legend's.
- *   Off     — satellite imagery alone.
- *
- * There used to be a fourth, a smoothly interpolated grid. It painted +0.39
- * yellow under a legend promising green for anything above 0.30, so it went.
+ * One view of a flight: the heatmap. Every capture's false-colour image is
+ * drawn at the patch of ground it actually covers, rotated to the heading the
+ * drone was flying -- full detail, and honest about coverage, because ground
+ * nobody photographed simply stays bare imagery. There used to be a grid, a
+ * three-band grid and an "off" switch as well; nobody needed them to find a
+ * problem, so they went.
  *
  * Footprints come from simple trigonometry: at height h a lens with horizontal
  * angle of view a covers 2*h*tan(a/2) across. For the Pi Camera v2 (62.2 x 48.8
  * degrees) at 12 m that is about 14.5 x 10.9 m.
+ *
+ * Each photo is a patch: the part of its footprint it saw most squarely (see
+ * segments()). The patches are outlined on the heatmap, and tapping one --
+ * or its pin -- rings it and explains it in the card below the map
+ * (results.js) rather than leaving the page.
  *
  * Leaflet and its images are vendored; tiles come off the Pi's own disk. Nothing
  * here touches the network at run time.
@@ -53,10 +51,9 @@
     });
   }
 
-  let mode = 'bands';
   let overlay = null;
   let opacity = 0.82;
-  let showPins = false;
+  let showPins = true;
   const mosaicCache = {};
 
   // The page's words, in its language (i18n.py). Absent before the first
@@ -157,9 +154,8 @@
     return [[s - padLat, w - padLon], [n + padLat, e + padLon]];
   }
 
-  // A flight opens on its squares -- the default view -- whole.
-  const openingBounds = flight ? gridBounds
-    : (allBlocksBounds() || vicinityBounds());
+  const openingBounds = mosaicBounds ||
+    (flight ? gridBounds : (allBlocksBounds() || vicinityBounds()));
   map.fitBounds(openingBounds, { padding: [24, 24] });
   L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
 
@@ -577,49 +573,73 @@
    *  -- always furthest from the centre -- are the parts that get dropped.
    *  Ground only one photo covered keeps that photo; nothing is invented.
    */
+  /** Every photo's footprint, cut down to its seam, computed once.
+   *
+   *  The mosaic is drawn from these, the outlines on the map are these, and a
+   *  tap is matched against these -- so the patch you tap is exactly the patch
+   *  of heatmap you were looking at, and the card shows the photo it came from.
+   *  Canvas pixels for drawing; `latlngs` for the map.
+   */
+  let segCache = null;
+  function segments() {
+    if (segCache) return segCache;
+    segCache = { shapes: [] };
+    if (!hasFootprints) return segCache;
+    const [[south, west], [north, east]] = mosaicBounds;
+    const midLat = (south + north) / 2;
+    const spanLonM = (east - west) * mPerDegLon(midLat);
+    const spanLatM = (north - south) * M_PER_DEG_LAT;
+
+    // ~2000 px on the long edge: enough that a 14 m footprint gets a couple of
+    // hundred pixels, without making a canvas the Pi's browser chokes on.
+    const target = 2000;
+    const pxPerM = target / Math.max(spanLonM, spanLatM);
+    const usable = pins.filter(function (p) { return p.footprint && p.thumb; });
+
+    // Every footprint in canvas pixels, then each one cut down to its seam.
+    const shapes = usable.map(function (p) {
+      const x = (p.lon - west) * mPerDegLon(midLat) * pxPerM;
+      const y = (north - p.lat) * M_PER_DEG_LAT * pxPerM;
+      const w = p.footprint.half_w_m * 2 * pxPerM;
+      const h = p.footprint.half_h_m * 2 * pxPerM;
+      return { p: p, x: x, y: y, w: w, h: h,
+               rect: rotatedRect(x, y, w, h, (p.heading || 0) * Math.PI / 180) };
+    });
+    shapes.forEach(function (a) {
+      let cell = a.rect;
+      const reachA = Math.hypot(a.w, a.h) / 2;
+      shapes.forEach(function (b) {
+        if (a === b || !cell.length) return;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const d = Math.hypot(dx, dy);
+        // Too far to share any ground, or taken from the same spot (a hover):
+        // no seam to cut, and a bisector of two identical points is undefined.
+        if (d < 1e-6 || d > reachA + Math.hypot(b.w, b.h) / 2) return;
+        cell = clipHalfPlane(cell, (a.x + b.x) / 2, (a.y + b.y) / 2, dx, dy);
+      });
+      a.cell = cell;
+      a.latlngs = cell.map(function (pt) {
+        return [north - pt[1] / (M_PER_DEG_LAT * pxPerM),
+                west + pt[0] / (mPerDegLon(midLat) * pxPerM)];
+      });
+    });
+    segCache = {
+      shapes: shapes.filter(function (sh) { return sh.cell.length >= 3; }),
+      width: Math.max(64, Math.round(spanLonM * pxPerM)),
+      height: Math.max(64, Math.round(spanLatM * pxPerM))
+    };
+    return segCache;
+  }
+
   function buildMosaic() {
     return new Promise(function (resolve) {
-      if (!hasFootprints) { resolve(null); return; }
-      const [[south, west], [north, east]] = mosaicBounds;
-      const midLat = (south + north) / 2;
-      const spanLonM = (east - west) * mPerDegLon(midLat);
-      const spanLatM = (north - south) * M_PER_DEG_LAT;
-
-      // ~2000 px on the long edge: enough that a 14 m footprint gets a couple of
-      // hundred pixels, without making a canvas the Pi's browser chokes on.
-      const target = 2000;
-      const pxPerM = target / Math.max(spanLonM, spanLatM);
+      const seg = segments();
+      const shapes = seg.shapes;
+      if (!shapes.length) { resolve(null); return; }
       const cv = document.createElement('canvas');
-      cv.width = Math.max(64, Math.round(spanLonM * pxPerM));
-      cv.height = Math.max(64, Math.round(spanLatM * pxPerM));
+      cv.width = seg.width;
+      cv.height = seg.height;
       const ctx = cv.getContext('2d');
-
-      const usable = pins.filter(function (p) { return p.footprint && p.thumb; });
-      if (!usable.length) { resolve(null); return; }
-
-      // Every footprint in canvas pixels, then each one cut down to its seam.
-      const shapes = usable.map(function (p) {
-        const x = (p.lon - west) * mPerDegLon(midLat) * pxPerM;
-        const y = (north - p.lat) * M_PER_DEG_LAT * pxPerM;
-        const w = p.footprint.half_w_m * 2 * pxPerM;
-        const h = p.footprint.half_h_m * 2 * pxPerM;
-        return { p: p, x: x, y: y, w: w, h: h,
-                 rect: rotatedRect(x, y, w, h, (p.heading || 0) * Math.PI / 180) };
-      });
-      shapes.forEach(function (a) {
-        let cell = a.rect;
-        const reachA = Math.hypot(a.w, a.h) / 2;
-        shapes.forEach(function (b) {
-          if (a === b || !cell.length) return;
-          const dx = b.x - a.x, dy = b.y - a.y;
-          const d = Math.hypot(dx, dy);
-          // Too far to share any ground, or taken from the same spot (a hover):
-          // no seam to cut, and a bisector of two identical points is undefined.
-          if (d < 1e-6 || d > reachA + Math.hypot(b.w, b.h) / 2) return;
-          cell = clipHalfPlane(cell, (a.x + b.x) / 2, (a.y + b.y) / 2, dx, dy);
-        });
-        a.cell = cell;
-      });
 
       let pending = shapes.length;
       shapes.forEach(function (s) {
@@ -682,102 +702,39 @@
     return out;
   }
 
-  /* ── grid overlay ───────────────────────────────────────────────────────── */
-
-  /** The squares, flat, in the legend's colours.
-   *
-   *  Vector rectangles rather than a picture, so the edges stay sharp however
-   *  far in you zoom. Squares no photo landed in are hatched rather than left
-   *  bare: inside the flight's outline, bare imagery looked like ground that
-   *  had been checked. The hatch is see-through and never a colour -- painting
-   *  an unvisited square would invent a reading.
-   */
-  function squaresLayer() {
-    const g = flight && flight.grid;
-    if (!g) return null;
-    const th = flight.thresholds || { healthy: 0.3, moderate: 0.1 };
-    const dLat = (gridBounds[1][0] - gridBounds[0][0]) / g.rows;
-    const dLon = (gridBounds[1][1] - gridBounds[0][1]) / g.cols;
-    const group = L.layerGroup();
-    for (let i = 0; i < g.cells.length; i++) {
-      const v = g.cells[i];
-      const row = (i / g.cols) | 0, col = i % g.cols;
-      const north = gridBounds[1][0] - row * dLat;
-      const west = gridBounds[0][1] + col * dLon;
-      const empty = v === null || v === undefined;
-      const rect = L.rectangle([[north - dLat, west], [north, west + dLon]], {
-        stroke: true, color: 'rgba(32, 30, 29, 0.35)', weight: 1,
-        fillColor: empty ? '#2e2b25'
-          : Colormap.rgbCss(Colormap.band(v, th.healthy, th.moderate)),
-        fillOpacity: empty ? 0.15 : opacity, interactive: false,
-        className: empty ? 'square-empty' : 'square-filled'
-      });
-      group.addLayer(rect);
-    }
-    return group;
-  }
-
-  /** The hatch for empty squares: an SVG pattern in Leaflet's own overlay svg. */
-  function addHatch() {
-    const svg = map.getPanes().overlayPane.querySelector('svg');
-    if (!svg || svg.querySelector('#hc-hatch')) return;
-    const ns = 'http://www.w3.org/2000/svg';
-    const defs = document.createElementNS(ns, 'defs');
-    const pat = document.createElementNS(ns, 'pattern');
-    pat.setAttribute('id', 'hc-hatch');
-    pat.setAttribute('patternUnits', 'userSpaceOnUse');
-    pat.setAttribute('width', '7');
-    pat.setAttribute('height', '7');
-    pat.setAttribute('patternTransform', 'rotate(45)');
-    const bg = document.createElementNS(ns, 'rect');
-    bg.setAttribute('width', '7'); bg.setAttribute('height', '7');
-    bg.setAttribute('fill', 'rgba(46, 43, 37, 0.25)');
-    const line = document.createElementNS(ns, 'rect');
-    line.setAttribute('width', '3'); line.setAttribute('height', '7');
-    line.setAttribute('fill', 'rgba(245, 234, 216, 0.7)');
-    pat.appendChild(bg); pat.appendChild(line);
-    defs.appendChild(pat);
-    svg.insertBefore(defs, svg.firstChild);
-  }
-
   /* ── overlay switching ──────────────────────────────────────────────────── */
 
+  // Thin outlines round every photo's patch, so the
+  // heatmap reads as separate photos you can tap.
+  let outlines = null;
+  function syncOutlines() {
+    if (!outlines) {
+      // Flagged photos in red and drawn last, so their whole edge shows.
+      const shapes = segments().shapes.slice().sort(function (a, b) {
+        return (a.p.flag ? 1 : 0) - (b.p.flag ? 1 : 0);
+      });
+      outlines = L.layerGroup(shapes.map(function (sh) {
+        return L.polygon(sh.latlngs, sh.p.flag
+          ? { color: '#c1442e', weight: 2.5, opacity: 1, fill: false, interactive: false }
+          : { color: '#f5ead8', weight: 1, opacity: 0.75, fill: false, interactive: false });
+      }));
+    }
+    outlines.addTo(map);
+  }
+
+  // Without footprints (no altitude recorded) there is no heatmap to draw;
+  // the pins still show where each photo was taken, and the note says why.
   async function drawOverlay() {
     if (overlay) { overlay.remove(); overlay = null; }
-    if (!flight || mode === 'none') return;
+    if (!flight || !hasFootprints) return;
+    syncOutlines();
+    if (!mosaicCache.url) mosaicCache.url = await buildMosaic();
+    if (!mosaicCache.url) return;
 
-    let url = null, bounds = gridBounds;
-    if (mode === 'photos') {
-      if (!hasFootprints) {
-        note('These photos have no altitude recorded, so the ground each one ' +
-             'covers is unknown. Showing the squares instead.');
-        mode = 'bands';
-        syncModeButtons();
-      } else {
-        if (!mosaicCache.url) mosaicCache.url = await buildMosaic();
-        url = mosaicCache.url;
-        bounds = mosaicBounds;
-      }
-    }
-    if (mode === 'bands') {
-      overlay = squaresLayer();
-      if (!overlay) return;
-      overlay.addTo(map);
-      addHatch();
-      overlay.eachLayer(function (r) {
-        if (r.options.className === 'square-empty') {
-          r.setStyle({ fillColor: 'url(#hc-hatch)', fillOpacity: 1 });
-        }
-      });
-      if (selRing) selRing.bringToFront();
-      return;
-    }
-    if (!url) return;
-
-    overlay = L.imageOverlay(url, bounds, {
-      opacity: opacity, interactive: false,
-      className: mode === 'photos' ? 'mosaic-layer' : 'grid-layer'
+    overlay = L.imageOverlay(mosaicCache.url, mosaicBounds, {
+      opacity: opacity, interactive: false, className: 'mosaic-layer'
     }).addTo(map);
+    outlines.eachLayer(function (l) { l.bringToFront(); });
     if (selRing) selRing.bringToFront();
   }
 
@@ -787,27 +744,30 @@
   const trackLayer = L.layerGroup();
 
   function buildPins() {
-    const COLOURS = {
-      healthy: '#2f8f3e', moderate: '#e0a020', stressed: '#c1442e'
-    };
+    // Red for a photo the verdict flags (flights.verdict), green otherwise --
+    // the pin says what the card will say, not the photo's soil-heavy mean.
     const track = [];
     pins.forEach(function (p) {
       track.push([p.lat, p.lon]);
+      const measured = p.mean !== null && p.mean !== undefined;
       const marker = L.circleMarker([p.lat, p.lon], {
-        radius: 6, weight: 2, color: '#f5ead8', fillOpacity: 0.95,
-        fillColor: COLOURS[p.classification] || '#82796a'
+        radius: p.flag ? 7 : 6, weight: 2, color: '#f5ead8', fillOpacity: 0.95,
+        fillColor: !measured ? '#82796a' : (p.flag ? '#c1442e' : '#2f8f3e')
       });
-      const label = Colormap.BAND_LABELS[p.classification] || 'no reading';
+      const label = !measured ? say('no_reading', 'No reading')
+        : (p.flag ? say('flagged_name', 'Worth a look') : say('healthy', 'Doing well'));
       marker.bindTooltip(
         '<strong>' + p.time + '</strong> · ' + label +
-        (p.mean === null ? '' : '<br>BNDVI ' + HC.fmt(p.mean)) +
+        (p.crown_weak === null || p.crown_weak === undefined ? ''
+          : '<br>' + crownShare(p)) +
         (p.footprint ? '<br>covers ' + p.footprint.width_m + ' × ' +
           p.footprint.height_m + ' m from ' + p.alt + ' m up' : '') +
-        (p.gsd_cm ? '<br>' + p.gsd_cm + ' cm per pixel' : '') +
-        '<br><em>click to open</em>',
+        (p.gsd_cm ? '<br>' + p.gsd_cm + ' cm per pixel' : ''),
         { direction: 'top', offset: [0, -6] });
-      marker.on('click', function () {
-        window.location.href = '/capture/' + p.id;
+      // Explained in the card below, rather than leaving the page.
+      marker.on('click', function (e) {
+        L.DomEvent.stopPropagation(e);
+        pick(p.id);
       });
       // Show where this photo actually looked, on hover.
       let ghost = null;
@@ -854,24 +814,11 @@
 
   const hint = document.getElementById('map-hint');
   const IDLE_HINT = flight
-    ? say('map_hint', 'Tap a square to have it explained.')
+    ? say('map_hint', 'Tap a spot on the map to have it explained below.')
     : 'Scroll to zoom, drag to pan. The dashed line is as far as the offline ' +
       'imagery goes.';
 
   function note(text) { if (hint) hint.textContent = text; }
-
-  function readCell(latlng) {
-    const g = flight && flight.grid;
-    if (!g) return null;
-    const fx = (latlng.lng - gridBounds[0][1]) /
-               (gridBounds[1][1] - gridBounds[0][1]);
-    const fy = 1 - (latlng.lat - gridBounds[0][0]) /
-               (gridBounds[1][0] - gridBounds[0][0]);
-    if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return null;
-    const col = Math.min(g.cols - 1, Math.floor(fx * g.cols));
-    const row = Math.min(g.rows - 1, Math.floor(fy * g.rows));
-    return { row: row, col: col, value: g.cells[row * g.cols + col] };
-  }
 
   /** Closest photo, so the readout can name the actual capture under the cursor
    *  rather than only a grid cell. */
@@ -886,28 +833,46 @@
     return best && bestD < 40 ? { pin: best, metres: bestD } : null;
   }
 
-  function describe(latlng) {
+  /** The photo whose patch holds this point. Without footprints (no altitude
+   *  recorded) there are no patches, so fall back to the nearest pin. */
+  function photoAt(latlng) {
+    const shapes = segments().shapes;
+    for (let i = 0; i < shapes.length; i++) {
+      if (inside(latlng.lat, latlng.lng, shapes[i].latlngs)) return shapes[i].p;
+    }
+    if (shapes.length) return null;
     const near = nearestPin(latlng);
-    const cell = readCell(latlng);
-    const parts = [];
+    return near ? near.pin : null;
+  }
 
-    if (cell) {
-      const where = say('where', 'Row {r}, column {c}',
-                        { r: cell.row + 1, c: cell.col + 1 });
-      if (cell.value === null || cell.value === undefined) {
-        parts.push(where + ' — ' + say('none', 'No photo').toLowerCase());
-      } else {
-        const th = (flight && flight.thresholds) || { healthy: 0.3, moderate: 0.1 };
-        const name = Colormap.bandName(cell.value, th.healthy, th.moderate);
-        parts.push(where + ' — ' + say(name, Colormap.BAND_LABELS[name]) +
-          ' · BNDVI ' + HC.fmt(cell.value));
-      }
+  function inside(lat, lon, pts) {
+    let hit = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const yi = pts[i][0], xi = pts[i][1], yj = pts[j][0], xj = pts[j][1];
+      if ((yi > lat) !== (yj > lat) &&
+          lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) hit = !hit;
     }
-    if (near && showPins) {
-      parts.push('nearest photo ' + near.pin.time + ' (' +
-        Math.round(near.metres) + ' m away)');
-    }
-    return parts.length ? parts.join('  ·  ') : IDLE_HINT;
+    return hit;
+  }
+
+  function describe(latlng) {
+    const p = photoAt(latlng);
+    if (!p) return IDLE_HINT;
+    const measured = p.mean !== null && p.mean !== undefined;
+    return say('where', 'Photo #{n} · {time}', { n: p.number || '?', time: p.time }) +
+      ' — ' + (!measured ? say('no_reading', 'No reading')
+        : (p.flag ? say('flagged_name', 'Worth a look') : say('healthy', 'Doing well'))) +
+      (p.crown_weak === null || p.crown_weak === undefined ? '' : ' · ' + crownShare(p));
+  }
+
+  function crownShare(p) {
+    const w = p.crown_weak > 0 && p.crown_weak < 0.1 ? '<0.1'
+      : Math.round(p.crown_weak * 10) / 10;
+    return say('crown_short', '{w}% orange or red on the plants', { w: w });
+  }
+
+  function pick(id) {
+    document.dispatchEvent(new CustomEvent('hc:photo-pick', { detail: { id: id } }));
   }
 
   map.on('mousemove', function (e) {
@@ -923,70 +888,40 @@
   map.on('click', function (e) {
     if (drawing) { onDrawClick(e.latlng); return; }
     note(describe(e.latlng));
-    // A tap on a square hands it to the panel below the map (results.js),
-    // which explains it and answers with hc:cell-selected.
-    const cell = readCell(e.latlng);
-    if (cell) {
-      document.dispatchEvent(new CustomEvent('hc:cell-pick', {
-        detail: { index: cell.row * flight.grid.cols + cell.col }
-      }));
-    }
+    const p = photoAt(e.latlng);
+    if (p) pick(p.id);
   });
 
-  /* ── the selected square ────────────────────────────────────────────────── */
+  /* ── the selected photo ─────────────────────────────────────────────────── */
 
+  // results.js answers a pick with hc:photo-selected; ring that photo's patch.
   let selRing = null;
-  document.addEventListener('hc:cell-selected', function (e) {
-    const g = flight && flight.grid;
-    if (!g) return;
-    const i = e.detail.index;
-    const row = (i / g.cols) | 0, col = i % g.cols;
-    const dLat = (gridBounds[1][0] - gridBounds[0][0]) / g.rows;
-    const dLon = (gridBounds[1][1] - gridBounds[0][1]) / g.cols;
-    const north = gridBounds[1][0] - row * dLat;
-    const west = gridBounds[0][1] + col * dLon;
-    const box = [[north - dLat, west], [north, west + dLon]];
-    if (selRing) selRing.setBounds(box);
-    else {
-      selRing = L.rectangle(box, {
+  document.addEventListener('hc:photo-selected', function (e) {
+    if (selRing) { selRing.remove(); selRing = null; }
+    const sh = segments().shapes.find(function (x) { return x.p.id === e.detail.id; });
+    const p = pins.find(function (x) { return x.id === e.detail.id; });
+    if (sh) {
+      selRing = L.polygon(sh.latlngs, {
         color: '#201e1d', weight: 3, fill: false, interactive: false
       }).addTo(map);
+    } else if (p) {
+      selRing = L.circleMarker([p.lat, p.lon], {
+        radius: 14, color: '#201e1d', weight: 3, fill: false, interactive: false
+      }).addTo(map);
     }
-    selRing.bringToFront();
-    if (e.detail.reveal && !map.getBounds().contains(box)) {
-      map.panTo([north - dLat / 2, west + dLon / 2]);
+    // Picked from the legend rather than tapped: bring it into view.
+    if (e.detail.reveal && p && !map.getBounds().pad(-0.1).contains([p.lat, p.lon])) {
+      map.panTo([p.lat, p.lon]);
     }
   });
 
   /* ── controls ───────────────────────────────────────────────────────────── */
 
-  function syncModeButtons() {
-    HC.$$('.map-mode').forEach(function (b2) {
-      b2.classList.toggle('is-active', b2.dataset.mode === mode);
-    });
-  }
-
-  HC.$$('.map-mode').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      mode = btn.dataset.mode;
-      syncModeButtons();
-      note(mode === 'photos'
-        ? say('photos_note', 'Each photo drawn where it was taken.')
-        : (mode === 'bands' ? IDLE_HINT : 'Satellite imagery only.'));
-      drawOverlay();
-    });
-  });
-
   const fade = document.getElementById('map-opacity');
   if (fade) {
     fade.addEventListener('input', function () {
       opacity = parseFloat(fade.value);
-      if (overlay && overlay.setOpacity) overlay.setOpacity(opacity);
-      else if (overlay) {
-        overlay.eachLayer(function (r) {
-          if (r.options.className === 'square-filled') r.setStyle({ fillOpacity: opacity });
-        });
-      }
+      if (overlay) overlay.setOpacity(opacity);
     });
   }
 
@@ -1196,8 +1131,9 @@
   drawOverlay();
 
   if (flight && !hasFootprints && pins.length) {
-    note('Photos have no altitude recorded, so only the squares are ' +
-         'available. Fly with the flight controller connected to get footprints.');
+    note('These photos have no altitude recorded, so the ground each one ' +
+         'covers is unknown and no heatmap can be drawn -- the pins show where ' +
+         'they were taken. Fly with the flight controller connected next time.');
   }
 
   // Leaflet mis-measures a container laid out after init, and again for print.

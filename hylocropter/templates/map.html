@@ -77,7 +77,7 @@
       {% for f in flights[:5] %}
         <a class="pill {{ 'is-active' if f.id == flight.id }}"
            href="{{ url_for('page_map', flight=f.id) }}">
-          {{ dot(f.classification) }}{{ f.name }} · {{ f.started_at[5:10] }}
+          {{ dot(pill_levels.get(f.id) or f.classification) }}{{ f.name }} · {{ f.started_at[5:10] }}
         </a>
       {% endfor %}
       <a class="pill is-dashed" href="{{ url_for('page_history') }}">
@@ -89,47 +89,50 @@
   {% include "_partials/mapframe.html" %}
 
   <div class="results-grid">
-    {# The tapped square. Filled in by results.js from data-cells; it opens on
-       the lowest-reading square, because that is where a walk should start. #}
+    {# The tapped photo. Each photo on the heatmap is its own patch -- the
+       ground it saw most squarely -- and tapping one (or its pin) fills this
+       card in from the map's pins (results.js) instead of leaving the page.
+       It opens on the lowest-reading photo, because that is where a walk
+       should start. #}
     <section class="card elev-sm square-card" id="square-panel"
-             data-cells='{{ cells|tojson }}'
-             data-cell-m='{{ cell_m|tojson }}'
-             data-cols="{{ flight.grid.cols if flight.grid else 14 }}"
-             {% if not cells|select|list %}hidden{% endif %}>
+             data-flagged='{{ ((verdict or {}).get('flagged') or [])|tojson }}'
+             {% if not pins %}hidden{% endif %}>
       <span class="card-kicker" id="sq-kicker"></span>
       <div class="square-head">
         <div class="square-dot" id="sq-dot"><span id="sq-short"></span></div>
         <div class="stack" style="gap:3px">
           <span class="square-where" id="sq-where"></span>
           <span class="square-name" id="sq-name"></span>
+          <span class="square-share" id="sq-share"></span>
           <span style="font-size:14px;line-height:1.45" id="sq-mean"></span>
           <span class="square-detail" id="sq-detail"></span>
         </div>
       </div>
-      <p class="square-patch" id="sq-patch" hidden></p>
       <p class="square-hint hc-noprint" id="sq-hint"></p>
-
-      <div id="sq-photo" hidden>
-        <span class="square-photo-title">{{ t('photo_title') }}</span>
-        <div class="photo-frame">
-          <img id="sq-img" alt="">
-          <div class="photo-switch hc-noprint" role="group">
-            <button type="button" class="is-active" data-view="bands">{{ t('color_short') }}</button>
-            <button type="button" data-view="raw">{{ t('raw_short') }}</button>
-          </div>
+      {# Stepping through one colour's photos, started from the legend. #}
+      <div class="photo-tour hc-noprint" id="sq-tour" hidden>
+        <span id="sq-tour-text"></span>
+        <button type="button" class="btn btn-ghost btn-sm" id="sq-tour-prev">{{ t('tour_prev') }}</button>
+        <button type="button" class="btn btn-secondary btn-sm" id="sq-tour-next">{{ t('tour_next') }}</button>
+      </div>
+      <div class="photo-frame">
+        <img id="sq-img" alt="">
+        <div class="photo-switch hc-noprint" role="group">
+          <button type="button" class="is-active" data-view="heatmap">{{ t('color_short') }}</button>
+          <button type="button" data-view="raw">{{ t('raw_short') }}</button>
         </div>
-        <p class="square-note" id="sq-photo-note">{{ t('photo_note') }}</p>
-        <div class="row" style="align-items:center">
-          <span class="square-detail grow" id="sq-photo-meta"></span>
-          <a class="btn btn-ghost btn-sm" id="sq-open">{{ t('open_photo') }}</a>
-        </div>
+      </div>
+      <p class="square-note" id="sq-photo-note">{{ t('photo_note') }}</p>
+      <div class="row" style="align-items:center">
+        <span class="grow"></span>
+        <a class="btn btn-ghost btn-sm" id="sq-open">{{ t('open_photo') }}</a>
       </div>
     </section>
 
     <div class="stack" style="gap:16px">
       {% if verdict and verdict.level %}
         {% set lv = verdict.level %}
-        <div class="card elev-sm verdict-card">
+        <div class="card elev-sm verdict-card is-{{ lv }}">
           <div class="verdict-icon is-{{ lv }}" aria-hidden="true">
             {% if lv == 'healthy' %}
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
@@ -141,24 +144,38 @@
           </div>
           <div class="stack" style="gap:6px">
             <span class="card-kicker" style="color:var(--color-accent-2-800)">{{ t('verdict_kicker') }}</span>
+            {# Only the plants: soil between them reads yellow on every flight,
+               and counting it is what made "97% green" sit under a yellow map. #}
             <span class="verdict-title">
-              {%- if lv == 'healthy' %}{{ t('verdict_healthy') }}
-              {%- elif lv == 'moderate' %}{{ t('verdict_moderate', n=verdict.counts.moderate) if verdict.basis == 'squares' else t('moderate') }}
-              {%- else %}{{ t('verdict_stressed', n=verdict.counts.stressed) if verdict.basis == 'squares' else t('stressed') }}{% endif -%}
+              {%- if verdict.basis == 'low' %}{{ t('verdict_low') }}
+              {%- elif verdict.widespread %}{{ t('verdict_widespread') }}
+              {%- elif verdict.flagged %}{{ t('verdict_flagged', n=verdict.flagged|length) }}
+              {%- else %}{{ t('verdict_healthy') }}{% endif -%}
             </span>
             <span style="font-size:14.5px;line-height:1.5">
-              {%- if verdict.basis == 'squares' %}
-                {{ t('verdict_body', covered=verdict.covered, g=verdict.counts.healthy,
-                     a=verdict.counts.moderate, r=verdict.counts.stressed) }}
-              {%- else %}{{ t('verdict_body_mean') }}{% endif %}
-              {% if flight.stats and flight.stats.moderate_pct is not none %}
-                {{ t('ground_share', g='%.0f'|format(flight.stats.healthy_pct),
-                     a='%.0f'|format(flight.stats.moderate_pct),
-                     r='%.0f'|format(flight.stats.stressed_pct)) }}
-              {% endif %}
+              {%- if verdict.basis == 'mean' %}
+                {{ t('verdict_mean') }}
+              {%- elif verdict.basis == 'low' %}
+                {{ t('verdict_low_body', th='%.2f'|format(flight.thresholds.healthy)) }}
+              {%- elif verdict.widespread %}
+                {{ t('verdict_how', n=verdict.covered) }}
+                {{ t('verdict_widespread_body', n=verdict.flagged|length, m=verdict.covered) }}
+              {%- else %}
+                {{ t('verdict_how', n=verdict.covered) }}
+                {% if verdict.crowns %}{{ t('verdict_crowns', n=verdict.crowns|length) }}{% endif %}
+                {% set extra = verdict.weaker|reject('in', verdict.crowns)|list %}
+                {% if extra %}{{ t('verdict_weaker', n=extra|length) }}{% endif %}
+                {% if not verdict.flagged %}{{ t('verdict_clear') }}{% endif %}
+                {% if verdict.basis == 'few' %}{{ t('verdict_few', n=verdict.covered) }}{% endif %}
+              {%- endif %}
+              {% if not pins %}{{ t('verdict_no_gps') }}{% endif %}
             </span>
             <span style="font-size:14px;line-height:1.45;color:var(--color-accent-2-800)">
               {{ t('action_' ~ lv) }}</span>
+            {% if verdict.flagged and pins %}
+              <button type="button" class="btn btn-secondary btn-sm hc-noprint"
+                      id="show-flagged" style="align-self:flex-start">{{ t('show_flagged') }}</button>
+            {% endif %}
           </div>
         </div>
       {% elif flight.status in ('processing', 'recording') %}
@@ -212,6 +229,15 @@
           {%- if comparison.k %} Not comparable as it stands: k
             {{ '%.2f'|format(comparison.k.before) if comparison.k.before is not none else 'off' }}
             → {{ '%.2f'|format(comparison.k.now) if comparison.k.now is not none else 'off' }}.{% endif %}
+        </div>
+      {% endif %}
+      {% set o = verdict.outliers if verdict else none %}
+      {% if verdict and verdict.typical is defined %}
+        <div class="tech-stats">
+          Plant reading (90th percentile per photo): typical {{ signed(verdict.typical) }}
+          {%- if o %}, spread {{ '%.3f'|format(o.spread) }}, flagged below {{ signed(o.cut) }}{% endif %}.
+          Crowns (brightest 10% in NIR) with ≥1% below {{ '%.2f'|format(flight.thresholds.healthy) }}:
+          {{ verdict.crowns|length }} photos. Weaker than the rest: {{ verdict.weaker|length }}.
         </div>
       {% endif %}
       {% for k in checks %}

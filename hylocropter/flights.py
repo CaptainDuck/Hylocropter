@@ -229,6 +229,51 @@ class Store:
             self._write(self.flights_file, records)
             return flight
 
+    def backfill_plant_readings(self):
+        """Work out the plant readings (`p90`, `crown_weak_pct`, `crown_median`)
+        for captures recorded before they existed.
+
+        One-off and slow -- each needs its saved BNDVI array and its raw JPEG,
+        about a second apiece on the Pi -- so app.py runs it in a background
+        thread at start-up; the map copes with readings still missing. Only
+        additive: two new keys inside `stats`, nothing existing is rewritten.
+        A capture with no array, or with pixels masked (the array does not say
+        which), is left without one rather than given a guess.
+        """
+        import numpy as np
+        from PIL import Image
+
+        todo = [c for c in self.captures(newest_first=False)
+                if has_reading(c) and "crown_weak_pct" not in c["stats"]
+                and c.get("files", {}).get("array")
+                and not (c["stats"].get("masked_pct") or 0)]
+        done = 0
+        for c in todo:
+            folder = self.capture_dir(c.get("flight_id"))
+            arr, raw = folder / c["files"]["array"], folder / c["files"].get("raw", "")
+            if not arr.exists() or not raw.is_file():
+                continue
+            th = (c.get("settings") or {}).get(
+                "threshold_healthy", bndvi.DEFAULT_THRESHOLD_HEALTHY)
+            try:
+                b = np.load(arr)["bndvi"]
+                nir = np.asarray(Image.open(raw))[:, :, 0]
+                if nir.shape != b.shape:
+                    continue
+                st = {"p90": bndvi.bndvi_stats(b)["p90"]}
+                st.update(bndvi.crown_stats(b, nir, th))
+            except (OSError, ValueError, KeyError) as e:
+                log.warning("plant reading for %s skipped: %s", c["id"], e)
+                continue
+            with self._lock:
+                records = self._read(self.captures_file)
+                rec = next((r for r in records if r["id"] == c["id"]), None)
+                if rec and rec.get("stats") is not None:
+                    rec["stats"].update(st)
+                    self._write(self.captures_file, records)
+                    done += 1
+        return done
+
     def attach_capture(self, flight_id, capture_id):
         with self._lock:
             records = self._read(self.flights_file)
@@ -572,71 +617,6 @@ def build_grid(captures, bounds, t_healthy, t_moderate,
             cells[i] = round(sums[i] / counts[i], 4)
             covered += 1
     return {"cols": cols, "rows": rows, "cells": cells, "covered": covered}
-
-
-def cell_size_m(bounds, cols=GRID_COLS, rows=GRID_ROWS):
-    """(width, height) of one grid square on the ground, in metres."""
-    if not bounds:
-        return None
-    mid = (bounds["north"] + bounds["south"]) / 2
-    return ((bounds["east"] - bounds["west"]) * m_per_deg_lon(mid) / cols,
-            (bounds["north"] - bounds["south"]) * M_PER_DEG_LAT / rows)
-
-
-def grid_cells(captures, bounds, t_healthy, t_moderate,
-               cols=GRID_COLS, rows=GRID_ROWS):
-    """What the farmer sees when they tap a square: one entry per grid cell.
-
-    None for a square no photo with a reading landed in -- the same squares
-    build_grid() leaves null. Otherwise the square's mean (identical to the
-    grid's, so the colour and the explanation agree), the band that mean falls
-    in at *this flight's* thresholds, how many photos it averages, the share of
-    ground in those photos per band, and the photo taken nearest the square's
-    centre -- the one worth showing up close.
-
-    The pixel shares are there because a square's mean can sit comfortably
-    above the line while a corner of one photo reads red; the panel says so
-    rather than hiding it behind the average.
-    """
-    out = [None] * (cols * rows)
-    if not bounds:
-        return out
-    members = {}
-    for c in captures:
-        if not has_reading(c):
-            continue
-        idx = cell_index(c.get("geo"), bounds, cols, rows)
-        if idx is not None:
-            members.setdefault(idx, []).append(c)
-
-    dlat = (bounds["north"] - bounds["south"]) / rows
-    dlon = (bounds["east"] - bounds["west"]) / cols
-    for idx, caps in members.items():
-        row, col = divmod(idx, cols)
-        centre = (bounds["north"] - (row + 0.5) * dlat,
-                  bounds["west"] + (col + 0.5) * dlon)
-
-        def off_centre(c):
-            return ((c["geo"]["lat"] - centre[0]) ** 2
-                    + ((c["geo"]["lon"] - centre[1])
-                       * math.cos(math.radians(centre[0]))) ** 2)
-
-        def share(key):
-            vals = [c["stats"].get(key) for c in caps
-                    if c["stats"].get(key) is not None]
-            return round(sum(vals) / len(vals), 2) if vals else None
-
-        mean = round(sum(c["stats"]["mean"] for c in caps) / len(caps), 4)
-        out[idx] = {
-            "row": row, "col": col, "mean": mean,
-            "band": bndvi.classify(mean, t_healthy, t_moderate),
-            "photos": len(caps),
-            "healthy_pct": share("healthy_pct"),
-            "moderate_pct": share("moderate_pct"),
-            "stressed_pct": share("stressed_pct"),
-            "photo": min(caps, key=off_centre)["id"],
-        }
-    return out
 
 
 def footprint(geo, fov_h_deg=62.2, fov_v_deg=48.8, canopy_m=0.0,
@@ -1314,35 +1294,119 @@ def compare_flights(flight, previous, deadband=COMPARE_DEADBAND_PCT):
                        + figures.format("against")}
 
 
-def verdict(cells, stats=None, thresholds=None):
-    """The farm-level status, worked out from the squares on the map.
+# Which photos stand out. A photo is flagged when its plant reading is this many
+# spreads below the flight's typical photo. The spread is the median absolute
+# deviation (scaled to match a standard deviation), but never taken as less than
+# the floor: on a very even flight the MAD can be 0.007, and three of those is
+# a difference no camera setting can hold steady. Placeholders, not field-tested
+# -- RESEARCH-GAPS.md §13.
+OUTLIER_SPREADS = 3.0
+OUTLIER_FLOOR = 0.015
+# Fewer photos than this and "typical" means too little to compare against.
+OUTLIER_MIN_PHOTOS = 8
 
-    It used to come from its own cut-offs on the mean (0.38 / 0.22) while the
-    map and legend used the flight's thresholds (0.30 / 0.10), so a flight at
-    +0.37 with nothing stressed was told to "walk the red patches" -- there were
-    none. Counting the squares the map actually paints keeps the words, the
-    legend and the colours in step.
+# A photo is also flagged when at least this share of its crown (the brightest
+# tenth in NIR -- bndvi.crown_stats) reads below the healthy line: orange or red
+# on the plants themselves. Healthy flights sit at 0.1% or less; the 9 Oct
+# flight, with orange visible on its crowns, at 2.5% typical and 16% at worst.
+# Placeholder like the rest -- RESEARCH-GAPS.md §13.
+CROWN_WEAK_MIN_PCT = 1.0
 
-    Returns ``{"level", "counts", "covered", "basis"}``; level is the worst
-    band any square is in. A flight with no GPS has no squares, so it falls back
-    to the band its overall mean falls in (``basis: "mean"``) -- still the same
-    thresholds as the legend, just with no map to point at.
+
+def crown_flagged(captures, min_pct=CROWN_WEAK_MIN_PCT):
+    """Photos with orange or red on the plants, most first."""
+    rows = [c for c in captures if has_reading(c)
+            and (c["stats"].get("crown_weak_pct") or 0) >= min_pct]
+    return [c["id"] for c in sorted(rows,
+                                    key=lambda c: -c["stats"]["crown_weak_pct"])]
+
+
+def plant_outliers(captures, spreads=OUTLIER_SPREADS, floor=OUTLIER_FLOOR,
+                   min_photos=OUTLIER_MIN_PHOTOS):
+    """Photos whose plants read clearly weaker than the rest of the flight.
+
+    Judged on the plant reading (`p90`), not the mean, because the mean mostly
+    measures how much soil is in frame. And judged *within* the flight, because
+    everything that shifts a whole flight at once -- the leak k, exposure, the
+    light that day -- shifts every photo together and cancels out.
+
+    Returns None when fewer than `min_photos` photos have a plant reading.
+    Otherwise ``{"n", "median", "spread", "cut", "gaps": {id: below median},
+    "flagged": [ids, most below first]}``.
     """
-    counts = {"healthy": 0, "moderate": 0, "stressed": 0}
-    for c in cells or []:
-        if c:
-            counts[c["band"]] += 1
-    covered = sum(counts.values())
-    if covered:
+    rows = [(c["id"], c["stats"]["p90"]) for c in captures
+            if has_reading(c) and c["stats"].get("p90") is not None]
+    if len(rows) < min_photos:
+        return None
+    vals = sorted(v for _, v in rows)
+    mid = len(vals) // 2
+    median = vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
+    devs = sorted(abs(v - median) for v in vals)
+    mad = devs[mid] if len(devs) % 2 else (devs[mid - 1] + devs[mid]) / 2
+    spread = max(mad * 1.4826, floor)
+    cut = median - spreads * spread
+    gaps = {cid: median - v for cid, v in rows}
+    flagged = sorted((cid for cid, v in rows if v < cut),
+                     key=lambda cid: -gaps[cid])
+    return {"n": len(rows), "median": median, "spread": spread, "cut": cut,
+            "gaps": gaps, "flagged": flagged}
+
+
+def verdict(captures, thresholds=None):
+    """The farm-level status a farmer reads first.
+
+    Built from each photo's plant reading, compared within the flight
+    (plant_outliers). It used to put each photo's *mean* in a band, and before
+    that the whole flight's mean against its own 0.38 / 0.22 cut-offs -- both
+    mostly measured how much soil was in frame, so they could not say which
+    plants were weaker.
+
+    ``basis`` says how it was decided:
+
+    * ``outliers`` -- the normal case; ``level`` is moderate when any photo is
+      flagged, healthy when none is. A photo is flagged for orange or red on
+      its crown (``crowns``, crown_flagged) or for plants reading clearly
+      weaker than the rest of the flight (``weaker``, plant_outliers).
+    * ``low`` -- the flight's *typical* plant reading is itself at or below the
+      healthy line. Nothing stands out because everything is down, which a
+      within-flight comparison can't see, so this is checked first.
+    * ``few`` -- too few photos to compare against each other; only the crown
+      check applies.
+    * ``mean`` -- no plant readings yet (an old flight still being worked out):
+      each photo's mean in a band, as before, said as such.
+    """
+    th = thresholds or {}
+    t_healthy = th.get("healthy", bndvi.DEFAULT_THRESHOLD_HEALTHY)
+    t_moderate = th.get("moderate", bndvi.DEFAULT_THRESHOLD_MODERATE)
+    readings = [c for c in captures or [] if has_reading(c)]
+    base = {"covered": len(readings), "flagged": [], "outliers": None}
+    if not readings:
+        return dict(base, level=None, basis=None)
+
+    plants = sorted(c["stats"]["p90"] for c in readings
+                    if c["stats"].get("p90") is not None)
+    if not plants:
+        counts = {"healthy": 0, "moderate": 0, "stressed": 0}
+        for c in readings:
+            counts[bndvi.classify(c["stats"]["mean"], t_healthy, t_moderate)] += 1
         level = ("stressed" if counts["stressed"]
                  else "moderate" if counts["moderate"] else "healthy")
-        return {"level": level, "counts": counts, "covered": covered,
-                "basis": "squares"}
-    if stats and stats.get("mean") is not None:
-        th = thresholds or {}
-        level = bndvi.classify(
-            stats["mean"], th.get("healthy", bndvi.DEFAULT_THRESHOLD_HEALTHY),
-            th.get("moderate", bndvi.DEFAULT_THRESHOLD_MODERATE))
-        return {"level": level, "counts": counts, "covered": 0,
-                "basis": "mean"}
-    return {"level": None, "counts": counts, "covered": 0, "basis": None}
+        return dict(base, level=level, basis="mean", counts=counts)
+
+    typical = plants[len(plants) // 2]
+    out = plant_outliers(readings)
+    crowns = crown_flagged(readings)
+    weaker = (out or {}).get("flagged") or []
+    # Orange on the crowns first -- it is what the farmer can see -- then the
+    # photos that only stand out by comparison.
+    flagged = crowns + [cid for cid in weaker if cid not in crowns]
+    base.update(typical=typical, outliers=out, crowns=crowns, weaker=weaker,
+                flagged=flagged)
+    if typical <= t_healthy:
+        return dict(base, level=bndvi.classify(typical, t_healthy, t_moderate),
+                    basis="low")
+    # When half the photos or more are flagged, a list to visit is the wrong
+    # answer: the whole block is affected, and the page says so.
+    return dict(base, level="moderate" if flagged else "healthy",
+                basis="few" if out is None else "outliers",
+                widespread=len(flagged) * 2 >= len(readings))

@@ -186,18 +186,16 @@
 .legend-row { display: flex; align-items: center; gap: 9px; font-size: 13px; }
 .legend-swatch { width: 14px; height: 14px; border-radius: 5px; flex: none; }
 .legend-row > span:nth-child(2) { margin-right: auto; }
-/* The heatmap's colour scale, -0.2 to +0.8 -- the stops of BNDVI_COLOR_STOPS
-   placed along that span. */
-.legend-ramp {
-  height: 12px; border-radius: 999px; width: 200px;
-  background: linear-gradient(90deg, rgb(193,68,46) 0%, rgb(224,160,32) 35%,
-    rgb(242,227,74) 55%, rgb(87,168,63) 80%, rgb(56,138,53) 100%);
-}
-.legend-ends { display: flex; justify-content: space-between; width: 200px;
-  font-size: 11.5px; color: color-mix(in srgb, var(--color-text) 62%, transparent); }
+/* The heatmap key: three colours from BNDVI_COLOR_STOPS, each with its meaning. */
+.legend-key { display: flex; align-items: flex-start; gap: 9px; max-width: 230px; }
+.legend-key .legend-swatch { margin-top: 2px; }
+.legend-key-text { display: flex; flex-direction: column; gap: 1px; font-size: 13px; line-height: 1.3; }
+.legend-key-text span { font-size: 11.5px;
+  color: color-mix(in srgb, var(--color-text) 65%, transparent); }
+.legend-swatch.is-green { background: rgb(87, 168, 63); }
+.legend-swatch.is-yellow { background: rgb(242, 227, 74); }
+.legend-swatch.is-red { background: linear-gradient(135deg, rgb(224, 160, 32), rgb(193, 68, 46)); }
 .legend-swatch.is-flag { background: transparent; border: 2.5px solid #c1442e; }
-.legend-note { font-size: 11.5px; line-height: 1.4; max-width: 220px;
-  color: color-mix(in srgb, var(--color-text) 62%, transparent); }
 .legend-share { color: color-mix(in srgb, var(--color-text) 55%, transparent);
   font-variant-numeric: tabular-nums; }
 

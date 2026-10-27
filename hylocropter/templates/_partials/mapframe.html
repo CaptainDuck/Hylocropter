@@ -15,16 +15,23 @@
     {% if flight %}
       <div class="map-overlay-panel map-legend hc-noprint">
         <span class="map-legend-title">{{ t('legend_title') }}</span>
-        {# A key to the heatmap's own smooth colours (BNDVI_COLOR_STOPS, -0.2
-           to +0.8), not shares of the flight: a percentage of "green" counted
-           at the 0.30 line sat under a map that was mostly yellow. #}
-        <div class="legend-ramp" aria-hidden="true"></div>
-        <div class="legend-ends"><span>{{ t('legend_weak') }}</span><span>{{ t('legend_strong') }}</span></div>
-        <div class="legend-row">
+        {# A key to the heatmap's own colours (BNDVI_COLOR_STOPS), each with
+           what it means for the farmer -- not shares of the flight: a
+           percentage of "green" counted at the 0.30 line sat under a map that
+           was mostly yellow. #}
+        {% for key, swatch in (('green', 'is-green'), ('yellow', 'is-yellow'), ('red', 'is-red')) %}
+          <div class="legend-key">
+            <span class="legend-swatch {{ swatch }}"></span>
+            <span class="legend-key-text">
+              <strong>{{ t('legend_' ~ key) }}</strong>
+              <span>{{ t('legend_' ~ key ~ '_mean') }}</span>
+            </span>
+          </div>
+        {% endfor %}
+        <div class="legend-key">
           <span class="legend-swatch is-flag"></span>
-          <span>{{ t('legend_flag') }}</span>
+          <span class="legend-key-text"><strong>{{ t('legend_flag') }}</strong></span>
         </div>
-        <span class="legend-note">{{ t('legend_note') }}</span>
       </div>
     {% endif %}
 

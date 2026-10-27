@@ -53,6 +53,7 @@
     return ((h % 12) || 12) + hms.slice(2) + (h < 12 ? ' AM' : ' PM');
   }
   function has(v) { return v !== null && v !== undefined; }
+  function orange(p) { return Math.max(0, (p.crown_weak || 0) - (p.crown_red || 0)); }
 
   let photoView = 'heatmap';
   let current = null;
@@ -80,7 +81,8 @@
     // What got it flagged, not a BNDVI figure: "+0.44" beside "worth a look"
     // reads as healthy and contradicts the label.
     $('sq-short').textContent = !measured ? '—'
-      : (has(p.crown_weak) ? share(p.crown_weak) + '%' : '');
+      : (level === 'stressed' && p.plant_red > 0 ? share(p.plant_red) + '%'
+        : (has(p.crown_weak) ? share(orange(p)) + '%' : ''));
     $('sq-name').textContent = !measured ? say('no_reading') : say(level);
     $('sq-mean').textContent = !measured ? '' : say(level + '_mean');
     $('sq-detail').textContent = p.footprint && measured
@@ -91,8 +93,12 @@
       : '';
 
     const why2 = [];
-    if (has(p.crown_weak)) why2.push(say('photo_crown', { w: share(p.crown_weak) }));
-    if (p.crown_red > 0) why2.push(say('photo_crown_red', { r: share(p.crown_red) }));
+    // Orange and red said apart, as the paper's classes are: the crown's
+    // below-0.30 share includes any red, so take the red out of it.
+    if (has(p.crown_weak)) why2.push(say('photo_crown', { w: share(orange(p)) }));
+    // Red is read on the whole plant area, dark dying tissue included
+    // (bndvi.plant_red_stats) -- not only the bright crown.
+    if (p.plant_red > 0) why2.push(say('photo_crown_red', { r: share(p.plant_red) }));
     if (p.weaker) why2.push(say('photo_weaker'));
     $('sq-share').textContent = why2.join(' ');
     $('sq-open').href = '/capture/' + p.id;

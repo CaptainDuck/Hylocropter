@@ -231,8 +231,8 @@ class Store:
 
     def backfill_plant_readings(self):
         """Work out the plant readings (`p90`, `crown_weak_pct`,
-        `crown_red_pct`, `crown_median`) for captures recorded before they
-        existed.
+        `crown_red_pct`, `crown_median`, `plant_red_pct`) for captures
+        recorded before they existed.
 
         One-off and slow -- each needs its saved BNDVI array and its raw JPEG,
         about a second apiece on the Pi -- so app.py runs it in a background
@@ -245,7 +245,7 @@ class Store:
         from PIL import Image
 
         todo = [c for c in self.captures(newest_first=False)
-                if has_reading(c) and "crown_red_pct" not in c["stats"]
+                if has_reading(c) and "plant_red_pct" not in c["stats"]
                 and c.get("files", {}).get("array")
                 and not (c["stats"].get("masked_pct") or 0)]
         done = 0
@@ -259,11 +259,13 @@ class Store:
             tm = s.get("threshold_moderate", bndvi.DEFAULT_THRESHOLD_MODERATE)
             try:
                 b = np.load(arr)["bndvi"]
-                nir = np.asarray(Image.open(raw))[:, :, 0]
+                rgb = np.asarray(Image.open(raw))
+                nir = rgb[:, :, 0]
                 if nir.shape != b.shape:
                     continue
                 st = {"p90": bndvi.bndvi_stats(b)["p90"]}
                 st.update(bndvi.crown_stats(b, nir, th, threshold_moderate=tm))
+                st.update(bndvi.plant_red_stats(b, rgb, tm))
             except (OSError, ValueError, KeyError) as e:
                 log.warning("plant reading for %s skipped: %s", c["id"], e)
                 continue
@@ -1338,22 +1340,25 @@ def plant_outliers(captures, spreads=OUTLIER_SPREADS, floor=OUTLIER_FLOOR,
             "gaps": gaps, "flagged": flagged}
 
 
-# A photo's status comes from its crown (the brightest tenth in NIR --
-# bndvi.crown_stats): how much of it reads orange or red, below the healthy
-# line, and how much reads red, below the stressed one.
+# A photo's status is the paper's three classes, read on its crown (the
+# brightest tenth in NIR -- bndvi.crown_stats), not the soil around it:
 #
-#   Okay           under CROWN_WEAK_MIN_PCT orange or red
-#   Dapat tingnan  from CROWN_WEAK_MIN_PCT, or plants clearly weaker than the
-#                  rest of the flight (plant_outliers)
-#   Silipin agad   from CROWN_URGENT_PCT, or at least CROWN_RED_MIN_PCT red
+#   Silipin agad   any of the plant reads red -- below the stressed line
+#                  (0.10). The class itself, no share of it. "The plant" here is
+#                  the crown grown into a plant area (bndvi.plant_area), so dark
+#                  dying tissue inside or against a plant counts while a
+#                  separate object does not.
+#   Dapat tingnan  at least CROWN_WEAK_MIN_PCT of the crown reads between the
+#                  lines (0.10-0.30, orange on the heatmap), or the plants
+#                  read clearly weaker than the rest of the flight
+#                  (plant_outliers)
+#   Okay           otherwise
 #
-# Healthy flights sit at 0.1% orange or less; the 9 Oct flight at 2.5% typical
-# and 16% at worst, 22 of its 63 photos at 5% or more. No crown on any flight
-# so far has any red, so the red floor only keeps a few stray pixels from
-# deciding it. Placeholders, not field-tested -- RESEARCH-GAPS.md §13.
+# The share for "Dapat tingnan" is there because a handful of crown pixels in
+# that range turn up on healthy flights (0.1% or less); the 9 Oct flight sits
+# at 2.5% typical and 16% at worst. No crown on any flight so far has any red.
+# Placeholder, not field-tested -- RESEARCH-GAPS.md §13.
 CROWN_WEAK_MIN_PCT = 1.0
-CROWN_URGENT_PCT = 5.0
-CROWN_RED_MIN_PCT = 0.1
 
 LEVEL_RANK = {"healthy": 0, "moderate": 1, "stressed": 2}
 
@@ -1367,8 +1372,7 @@ def photo_level(capture, weaker=False):
     st = capture["stats"]
     if st.get("crown_weak_pct") is None:
         return "moderate" if weaker else None
-    if (st["crown_weak_pct"] >= CROWN_URGENT_PCT
-            or (st.get("crown_red_pct") or 0) >= CROWN_RED_MIN_PCT):
+    if (st.get("plant_red_pct") or st.get("crown_red_pct") or 0) > 0:
         return "stressed"
     if st["crown_weak_pct"] >= CROWN_WEAK_MIN_PCT or weaker:
         return "moderate"

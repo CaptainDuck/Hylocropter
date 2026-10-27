@@ -881,8 +881,8 @@
   }
 
   function crownShare(p) {
-    const w = p.crown_weak > 0 && p.crown_weak < 0.1 ? '<0.1'
-      : Math.round(p.crown_weak * 10) / 10;
+    const o = Math.max(0, p.crown_weak - (p.crown_red || 0));   // orange only
+    const w = o > 0 && o < 0.1 ? '<0.1' : Math.round(o * 10) / 10;
     return say('crown_short', '{w}% orange or red on the plants', { w: w });
   }
 

@@ -132,6 +132,66 @@ CROWN_PERCENTILE = 90
 SATURATED = 254
 
 
+# The plant area, for finding red *on* a plant. The crown alone can't hold it:
+# dying tissue stops reflecting NIR, so it is exactly what the brightest tenth
+# leaves out. The crown is grown into a plant area instead -- holes closed,
+# edges widened a little -- so dark tissue inside or against a living plant
+# counts, while a separate object or bare ground does not. Worked on a grid of
+# PLANT_CELL_PX-square cells: averaging a cell is what keeps one noisy pixel
+# from reading as red, and it keeps the Pi's work small.
+PLANT_CELL_PX = 8
+PLANT_CLOSE_CELLS = 5     # holes up to ~10 cells across get filled
+PLANT_GROW_CELLS = 2      # and the edge widened by 2 cells
+
+
+def _pool(a, cell=PLANT_CELL_PX):
+    h, w = a.shape[0] // cell * cell, a.shape[1] // cell * cell
+    return a[:h, :w].reshape(h // cell, cell, w // cell, cell).mean(axis=(1, 3))
+
+
+def _dilate(m, r):
+    """Binary dilation by a disc of radius r, with plain numpy (no scipy on
+    the Pi). Padded, so a plant at one edge doesn't wrap to the other."""
+    h, w = m.shape
+    p = np.pad(m, r)
+    out = np.zeros_like(m)
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            if dy * dy + dx * dx <= r * r:
+                out |= p[r + dy:r + dy + h, r + dx:r + dx + w]
+    return out
+
+
+def plant_area(nir, cell=PLANT_CELL_PX):
+    """The plant area on the cell grid: the crown (brightest tenth in NIR),
+    closed and grown. See PLANT_CELL_PX."""
+    n = _pool(nir.astype(float), cell)
+    crown = n >= np.percentile(n, CROWN_PERCENTILE)
+    closed = ~_dilate(~_dilate(crown, PLANT_CLOSE_CELLS), PLANT_CLOSE_CELLS)
+    return _dilate(closed, PLANT_GROW_CELLS)
+
+
+def plant_red_stats(bndvi, rgb_array, threshold_moderate=DEFAULT_THRESHOLD_MODERATE,
+                    min_signal=DEFAULT_MIN_SIGNAL, mask=None):
+    """How much of the plant area reads red -- below the stressed line.
+
+    Cells too dark to read (NIR + blue under `min_signal`, see
+    low_signal_mask) are left out: their ratio is noise, not tissue. Returns
+    ``{"plant_red_pct"}``, the share of plant-area cells reading red, or None
+    when there is no plant area to read.
+    """
+    nir = rgb_array[:, :, 0]
+    zone = plant_area(nir)
+    b = bndvi if mask is None else np.where(mask, np.nan, bndvi)
+    cells = _pool(b)
+    signal = _pool(nir.astype(float) + rgb_array[:, :, 2].astype(float))
+    readable = zone & (signal >= min_signal) & np.isfinite(cells)
+    if not readable.any():
+        return {"plant_red_pct": None}
+    red = readable & (cells < threshold_moderate)
+    return {"plant_red_pct": float(red.sum() / readable.sum() * 100)}
+
+
 def crown_stats(bndvi, nir, threshold_healthy=DEFAULT_THRESHOLD_HEALTHY,
                 mask=None, threshold_moderate=DEFAULT_THRESHOLD_MODERATE):
     """How much of the crown reads below the healthy line, and below the
@@ -1313,6 +1373,7 @@ def capture_and_analyse(
     stats = bndvi_stats(bndvi, threshold_healthy, threshold_moderate, mask=mask)
     stats.update(crown_stats(bndvi, rgb[:, :, 0], threshold_healthy, mask=mask,
                              threshold_moderate=threshold_moderate))
+    stats.update(plant_red_stats(bndvi, rgb, threshold_moderate, mask=mask))
 
     return {
         "id": capture_id,

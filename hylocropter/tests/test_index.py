@@ -538,3 +538,42 @@ def test_crown_reports_red_separately():
     s = bndvi.crown_stats(b, nir, 0.30, threshold_moderate=0.10)
     assert s["crown_weak_pct"] == pytest.approx(40.0)
     assert s["crown_red_pct"] == pytest.approx(20.0)
+
+
+# ── red on the plant, dark dying tissue included ────────────────────────────
+#
+# Dying tissue stops reflecting NIR, so the bright crown leaves it out. The
+# plant area grows the crown to take in dark tissue inside or against a plant,
+# and not a separate object.
+
+def _field(h=240, w=320):
+    """Soil everywhere, one healthy plant in the middle -- over a tenth of the
+    frame, as a crown is from 6 m."""
+    rgb = np.full((h, w, 3), 30, np.uint8)
+    b = np.full((h, w), 0.37)
+    rgb[70:170, 100:220, 0] = 200          # bright crown
+    rgb[70:170, 100:220, 2] = 60
+    b[70:170, 100:220] = 0.45
+    return rgb, b
+
+
+def test_a_dead_patch_inside_a_plant_reads_red():
+    rgb, b = _field()
+    rgb[104:136, 144:176, 0] = 40          # dark, dying middle
+    b[104:136, 144:176] = 0.02
+    assert bndvi.plant_red_stats(b, rgb, 0.10)["plant_red_pct"] > 0
+
+
+def test_a_red_object_away_from_the_plants_does_not():
+    rgb, b = _field()
+    rgb[8:40, 8:40, 0] = 40                # a dark thing in a corner
+    rgb[8:40, 8:40, 2] = 40
+    b[8:40, 8:40] = 0.02
+    assert bndvi.plant_red_stats(b, rgb, 0.10)["plant_red_pct"] == 0
+
+
+def test_too_dark_to_read_is_not_red():
+    rgb, b = _field()
+    rgb[104:136, 144:176] = 2              # black: below the signal floor
+    b[104:136, 144:176] = 0.02
+    assert bndvi.plant_red_stats(b, rgb, 0.10)["plant_red_pct"] == 0

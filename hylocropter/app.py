@@ -339,6 +339,7 @@ def page_map():
             "level": ((verdict or {}).get("levels") or {}).get(c["id"]),
             "crown_weak": (c.get("stats") or {}).get("crown_weak_pct"),
             "crown_red": (c.get("stats") or {}).get("crown_red_pct"),
+            "plant_red": (c.get("stats") or {}).get("plant_red_pct"),
             "crown_median": (c.get("stats") or {}).get("crown_median"),
             "weaker": c["id"] in ((verdict or {}).get("weaker") or ()),
             "raw": (url_for("captures_file", filename=c["files"]["raw"])

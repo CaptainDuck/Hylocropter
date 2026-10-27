@@ -43,7 +43,12 @@
     {%- if s.mean is none -%}
       {{ t('no_reading') }}
     {%- elif s.crown_weak_pct is defined and s.crown_weak_pct is not none -%}
-      {{ t('photo_crown', w=('<0.1' if 0 < s.crown_weak_pct < 0.1 else '%.1f'|format(s.crown_weak_pct))) }}
+      {# Orange and red apart, as the paper's classes are. #}
+      {%- set red = s.crown_red_pct or 0 -%}
+      {%- set o = [s.crown_weak_pct - red, 0]|max -%}
+      {{ t('photo_crown', w=('<0.1' if 0 < o < 0.1 else '%.1f'|format(o))) }}
+      {%- set pr = s.plant_red_pct or 0 -%}
+      {%- if pr > 0 %} {{ t('photo_crown_red', r=('<0.1' if pr < 0.1 else '%.1f'|format(pr))) }}{% endif %}
     {%- endif %}
     {%- if not r.geo %} {{ t('no_gps') }}{% endif %}
   </div>

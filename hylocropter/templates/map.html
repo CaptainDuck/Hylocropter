@@ -236,10 +236,10 @@
         <div class="tech-stats">
           Plant reading (90th percentile per photo): typical {{ signed(verdict.typical) }}
           {%- if o %}, spread {{ '%.3f'|format(o.spread) }}, flagged below {{ signed(o.cut) }}{% endif %}.
-          Crowns (brightest 10% in NIR): {{ verdict.urgent|length }} photos at ≥5% below
-          {{ '%.2f'|format(flight.thresholds.healthy) }} or ≥0.1% below
+          Crowns (brightest 10% in NIR): {{ verdict.urgent|length }} photos with any pixel below
           {{ '%.2f'|format(flight.thresholds.moderate) }} (Silipin agad);
-          {{ verdict.crown_watch|length }} at ≥1% (Dapat tingnan). Weaker than the rest: {{ verdict.weaker|length }}.
+          {{ verdict.crown_watch|length }} with ≥1% between {{ '%.2f'|format(flight.thresholds.moderate) }}
+          and {{ '%.2f'|format(flight.thresholds.healthy) }} (Dapat tingnan). Weaker than the rest: {{ verdict.weaker|length }}.
         </div>
       {% endif %}
       {% for k in checks %}

@@ -1025,9 +1025,9 @@ def test_orange_on_a_crown_flags_that_photo():
     caps[3] = _plant("c3", 0.44, crown=16.0)
     caps[7] = _plant("c7", 0.44, crown=2.5)
     v = flights.verdict(caps, TH)
-    # 16% is "Silipin agad", 2.5% "Dapat tingnan"; worst first.
-    assert v["level"] == "stressed" and v["flagged"] == ["c3", "c7"]
-    assert v["urgent"] == ["c3"] and v["watch"] == ["c7"]
+    # Orange alone is "Dapat tingnan" however much of it; most first.
+    assert v["level"] == "moderate" and v["flagged"] == ["c3", "c7"]
+    assert v["urgent"] == [] and v["watch"] == ["c3", "c7"]
     assert not v["widespread"]
 
 
@@ -1070,17 +1070,16 @@ def test_too_few_photos_still_checks_the_crowns():
     assert v["basis"] == "few" and v["flagged"] == ["b"]
 
 
-def test_three_statuses_from_the_crown():
+def test_three_statuses_are_the_papers_classes():
     def level(weak, red=0.0, weaker=False):
         c = _plant("x", 0.44, crown=weak)
         c["stats"]["crown_red_pct"] = red
         return flights.photo_level(c, weaker)
     assert level(0.5) == "healthy"
-    assert level(1.0) == "moderate"          # Dapat tingnan from 1%
-    assert level(4.9) == "moderate"
-    assert level(5.0) == "stressed"          # Silipin agad from 5%
-    assert level(0.5, red=0.2) == "stressed"  # any real red on the plant
-    assert level(0.5, red=0.05) == "healthy"  # a few stray pixels are not red
+    assert level(1.0) == "moderate"          # Dapat tingnan from 1% orange
+    assert level(16.0) == "moderate"         # still orange, not red
+    assert level(0.5, red=0.01) == "stressed"  # Silipin agad: any red at all
+    assert level(16.0, red=0.0) == "moderate"
     assert level(0.5, weaker=True) == "moderate"
 
 
@@ -1090,3 +1089,17 @@ def test_the_verdict_takes_the_worst_status():
     v = flights.verdict(caps, TH)
     assert v["level"] == "moderate" and v["urgent"] == [] and v["watch"] == ["c2"]
     assert v["levels"]["c0"] == "healthy"
+
+
+def test_red_on_a_plant_is_silipin_agad():
+    caps = [_plant(f"c{i}", 0.44) for i in range(20)]
+    caps[4] = _plant("c4", 0.44, crown=0.5)
+    caps[4]["stats"]["crown_red_pct"] = 0.02
+    v = flights.verdict(caps, TH)
+    assert v["level"] == "stressed" and v["urgent"] == ["c4"]
+
+
+def test_red_on_the_plant_area_is_silipin_agad():
+    c = _plant("x", 0.44, crown=0.0)
+    c["stats"].update({"crown_red_pct": 0.0, "plant_red_pct": 0.5})
+    assert flights.photo_level(c) == "stressed"

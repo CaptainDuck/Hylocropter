@@ -278,6 +278,33 @@ class Store:
                     done += 1
         return done
 
+    def redraw_colours(self, flight_id):
+        """Redraw a flight's coloured images (false-colour, thumbnail, heatmap
+        figure) from its saved BNDVI arrays, after the colour scale changed.
+
+        The raw photo and every stored number stay as they are -- only the
+        pictures of them change. A capture with no array is left alone.
+        """
+        import numpy as np
+        from PIL import Image
+
+        done = 0
+        for c in self.captures(flight_id=flight_id, newest_first=False):
+            files = c.get("files") or {}
+            folder = self.capture_dir(flight_id)
+            arr, raw = folder / files.get("array", ""), folder / files.get("raw", "")
+            if not files.get("array") or not arr.is_file() or not raw.is_file():
+                continue
+            s = c.get("settings") or {}
+            b = np.load(arr)["bndvi"]
+            rgb = np.asarray(Image.open(raw))
+            bndvi.render_colour_outputs(
+                rgb, b, bndvi.bndvi_to_rgb(b), folder, files, c["id"],
+                s.get("threshold_healthy", bndvi.DEFAULT_THRESHOLD_HEALTHY),
+                s.get("threshold_moderate", bndvi.DEFAULT_THRESHOLD_MODERATE))
+            done += 1
+        return done
+
     def attach_capture(self, flight_id, capture_id):
         with self._lock:
             records = self._read(self.flights_file)

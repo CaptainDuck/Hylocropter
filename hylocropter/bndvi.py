@@ -256,9 +256,16 @@ DEFAULT_NIR_LEAK_COEF = 0.35
 # Single source of truth for how a BNDVI value becomes a colour. Mirrored
 # verbatim in static/js/colormap.js -- if you change one, change both.
 # Also handed to matplotlib so the heatmap PNG matches the browser exactly.
+# Red runs right up to the stressed line (0.10), the paper's red class, so a
+# reading below it looks red rather than the dark orange the scale used to
+# give everything between -0.1 and 0.10. From 0.10 up the colours are exactly
+# what they were -- (220, 147, 34) is the old scale's own colour at 0.10 -- so
+# heatmaps with nothing below the line look the same before and after.
 BNDVI_COLOR_STOPS = (
     (-1.00, (90, 24, 18)),
     (-0.20, (193, 68, 46)),
+    (0.0999, (193, 68, 46)),
+    (0.10, (220, 147, 34)),
     (0.15, (224, 160, 32)),
     (0.35, (242, 227, 74)),
     (0.60, (87, 168, 63)),
@@ -1194,9 +1201,6 @@ def render_outputs(rgb_array, bndvi, bndvi_rgb, output_dir, capture_id,
                    threshold_moderate=DEFAULT_THRESHOLD_MODERATE, mask=None):
     """Save raw, heatmap, false-colour, thumbnail (+ optional .npz).
     Returns a dict of relative filenames."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
     from PIL import Image
 
     output_dir = Path(output_dir)
@@ -1210,6 +1214,28 @@ def render_outputs(rgb_array, bndvi, bndvi_rgb, output_dir, capture_id,
     }
 
     Image.fromarray(rgb_array).save(output_dir / names["raw"], quality=92)
+    if save_array:
+        names["array"] = f"bndvi_{capture_id}.npz"
+        np.savez_compressed(output_dir / names["array"], bndvi=bndvi)
+    render_colour_outputs(rgb_array, bndvi, bndvi_rgb, output_dir, names,
+                          capture_id, threshold_healthy, threshold_moderate,
+                          mask=mask)
+    return names
+
+
+def render_colour_outputs(rgb_array, bndvi, bndvi_rgb, output_dir, names,
+                          capture_id, threshold_healthy=DEFAULT_THRESHOLD_HEALTHY,
+                          threshold_moderate=DEFAULT_THRESHOLD_MODERATE,
+                          mask=None):
+    """Draw the coloured images -- false-colour, thumbnail, heatmap figure --
+    from a capture's BNDVI. Apart from render_outputs so a capture can be
+    redrawn after the colour scale changes without touching its raw photo."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from PIL import Image
+
+    output_dir = Path(output_dir)
     Image.fromarray(bndvi_rgb).save(output_dir / names["falsecolor"])
 
     # The thumbnail is a JPEG and JPEG has no alpha, so masked pixels are flattened
@@ -1222,10 +1248,6 @@ def render_outputs(rgb_array, bndvi, bndvi_rgb, output_dir, capture_id,
         thumb = flat
     thumb.thumbnail((400, 400))
     thumb.save(output_dir / names["thumb"], quality=85)
-
-    if save_array:
-        names["array"] = f"bndvi_{capture_id}.npz"
-        np.savez_compressed(output_dir / names["array"], bndvi=bndvi)
 
     fig, axes = plt.subplots(1, 2, figsize=(16, 7), facecolor="#f5ead8")
     axes[0].imshow(rgb_array)

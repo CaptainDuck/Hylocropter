@@ -577,3 +577,15 @@ def test_too_dark_to_read_is_not_red():
     rgb[104:136, 144:176] = 2              # black: below the signal floor
     b[104:136, 144:176] = 0.02
     assert bndvi.plant_red_stats(b, rgb, 0.10)["plant_red_pct"] == 0
+
+
+def test_below_the_stressed_line_is_red_and_above_it_unchanged():
+    """The paper's red class must look red; everything from 0.10 up keeps the
+    colour it always had, so heatmaps without red don't change."""
+    red = bndvi.bndvi_to_rgb(np.array([[0.05, 0.0, 0.099]]))
+    assert all(tuple(px) == (193, 68, 46) for px in red[0])
+    above = bndvi.bndvi_to_rgb(np.array([[0.12, 0.30, 0.45]]))
+    # the old scale ran straight from (193,68,46) at -0.20 to (224,160,32) at 0.15
+    t = (0.12 + 0.20) / 0.35
+    old_012 = [int(193 + t * 31), int(68 + t * 92), int(46 - t * 14)]
+    assert all(abs(int(a) - b) <= 1 for a, b in zip(above[0][0], old_012))

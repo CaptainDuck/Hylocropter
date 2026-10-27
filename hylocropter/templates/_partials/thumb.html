@@ -8,13 +8,9 @@
     {% endif %}
     {# On a flight's results the tag says what the verdict says about the
        photo's plants; elsewhere it is still the mean's band. #}
-    {% if flagged_ids is defined and flagged_ids is not none and not c.files_purged
-          and c.stats and c.stats.mean is not none %}
-      {% if c.id in flagged_ids %}
-        <span class="tag tag-moderate">{{ t('flagged_name') }}</span>
-      {% else %}
-        <span class="tag tag-healthy">{{ t('healthy') }}</span>
-      {% endif %}
+    {% set lv = photo_levels.get(c.id) if photo_levels is defined and photo_levels is not none else none %}
+    {% if lv and not c.files_purged %}
+      <span class="tag tag-{{ lv }}">{{ t(lv) }}</span>
     {% else %}
       {{ band_tag(c.classification if not c.files_purged else 'failed') }}
     {% endif %}

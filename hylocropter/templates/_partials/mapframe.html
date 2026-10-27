@@ -12,13 +12,24 @@
                             "box_m": cfg.plot_box_m}|tojson }}'
          data-blocks='{{ blocks|tojson }}'></div>
 
-    {% if flight %}
+    {# A flight with nothing to draw -- a failed flight with no photos, or
+       photos with no GPS -- says so on the map. Otherwise it showed the whole
+       vicinity with no heatmap, which read as a blank page. #}
+    {% set nothing_to_draw = flight and not pins %}
+    {% if nothing_to_draw %}
+      <div class="map-overlay-panel map-empty">
+        {{ t('map_no_gps') if captures else t('map_no_photos') }}
+      </div>
+    {% endif %}
+
+    {% if flight and not nothing_to_draw %}
       <div class="map-overlay-panel map-legend hc-noprint">
         <span class="map-legend-title">{{ t('legend_title') }}</span>
-        {# A key to the heatmap's own colours (BNDVI_COLOR_STOPS), each with
-           what it means for the farmer -- not shares of the flight: a
-           percentage of "green" counted at the 0.30 line sat under a map that
-           was mostly yellow. #}
+        {# One key, the paper's three classes: each colour is both what the
+           heatmap shows and the status a photo's pin and outline take
+           (flights.photo_level). Yellow says plainly that it is usually soil
+           or dry grass -- most of every flight reads yellow -- and only
+           matters on the plant itself. #}
         {% for key, swatch in (('green', 'is-green'), ('yellow', 'is-yellow'), ('red', 'is-red')) %}
           <div class="legend-key">
             <span class="legend-swatch {{ swatch }}"></span>
@@ -28,10 +39,7 @@
             </span>
           </div>
         {% endfor %}
-        <div class="legend-key">
-          <span class="legend-swatch is-flag"></span>
-          <span class="legend-key-text"><strong>{{ t('legend_flag') }}</strong></span>
-        </div>
+        <span class="legend-status-note">{{ t('legend_status_note') }}</span>
       </div>
     {% endif %}
 
@@ -61,6 +69,10 @@
         <label class="map-toggle">
           <input type="checkbox" id="map-show-pins" checked>
           <span>{{ t('pins') }}</span>
+        </label>
+        <label class="map-toggle">
+          <input type="checkbox" id="map-show-outlines" checked>
+          <span>{{ t('outlines') }}</span>
         </label>
       {% endif %}
 
@@ -139,7 +151,9 @@
     </div>
   </div>
   <div class="map-hint" id="map-hint">
-    {% if flight %}
+    {% if nothing_to_draw %}
+      {{ t('map_no_gps') if captures else t('map_no_photos') }}
+    {% elif flight %}
       {{ t('map_hint') }}
     {% else %}
       Scroll to zoom, drag to pan. The dashed line is as far as the offline

@@ -682,6 +682,14 @@ The verdict now looks at the plants only, two ways (`flights.verdict`):
   in NIR (`bndvi.CROWN_PERCENTILE = 90`); a photo is flagged when ≥ 1% of it reads
   below the healthy line (`flights.CROWN_WEAK_MIN_PCT = 1.0`). Measured: healthy
   flights 0.1% or less per photo; 9 Oct 2.5% typical, 16% worst.
+- **Three statuses from the crown** (`flights.photo_level`): *Okay* under 1%
+  orange or red; *Dapat tingnan* (worth a look) from 1%; *Silipin agad* (needs a
+  look now) from 5%, or when ≥ 0.1% of the crown reads red (below 0.10)
+  (`CROWN_URGENT_PCT = 5.0`, `CROWN_RED_MIN_PCT = 0.1`). 5% is where the 9 Oct
+  flight splits roughly in half (22 of 63 photos at 5% or more, 26 between 1% and
+  5%); no other flight has a photo above 3.8%. No crown on any of the seven
+  flights has any red at all, so the red rule is untested — the 0.1% floor only
+  keeps a few stray pixels from deciding it.
 - **Plants weaker than the rest of the flight.** Each photo's 90th-percentile
   BNDVI (`p90`) against the flight's median, flagged below median − 3 × spread,
   spread = MAD × 1.4826 but never under 0.015 (`OUTLIER_SPREADS`,
@@ -696,8 +704,8 @@ The verdict now looks at the plants only, two ways (`flights.verdict`):
   view flags it regardless (it is what they see); the technical card says why.
 - "Brightest in NIR" is crown on our photos, but a pale stone or a sack would
   qualify too. 30 Sep 12:11 photo 7's orange spot may be one.
-- 1%, 3 × spread and the 0.015 floor were picked by looking at seven flights of
-  one block. Objective 4's field check — walk the flagged photos, record what is
+- 1%, 5%, the 0.1% red floor, 3 × spread and the 0.015 floor were picked by
+  looking at seven flights of one block. Objective 4's field check — walk the flagged photos, record what is
   there — is what turns them into numbers.
 
 ## Suggested order of attack

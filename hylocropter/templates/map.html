@@ -149,6 +149,7 @@
             <span class="verdict-title">
               {%- if verdict.basis == 'low' %}{{ t('verdict_low') }}
               {%- elif verdict.widespread %}{{ t('verdict_widespread') }}
+              {%- elif verdict.urgent %}{{ t('verdict_urgent', n=verdict.urgent|length) }}
               {%- elif verdict.flagged %}{{ t('verdict_flagged', n=verdict.flagged|length) }}
               {%- else %}{{ t('verdict_healthy') }}{% endif -%}
             </span>
@@ -157,15 +158,14 @@
                 {{ t('verdict_mean') }}
               {%- elif verdict.basis == 'low' %}
                 {{ t('verdict_low_body', th='%.2f'|format(flight.thresholds.healthy)) }}
-              {%- elif verdict.widespread %}
-                {{ t('verdict_how', n=verdict.covered) }}
-                {{ t('verdict_widespread_body', n=verdict.flagged|length, m=verdict.covered) }}
               {%- else %}
                 {{ t('verdict_how', n=verdict.covered) }}
-                {% if verdict.crowns %}{{ t('verdict_crowns', n=verdict.crowns|length) }}{% endif %}
-                {% set extra = verdict.weaker|reject('in', verdict.crowns)|list %}
+                {% if verdict.urgent %}{{ t('verdict_urgent_body', n=verdict.urgent|length) }}{% endif %}
+                {% if verdict.crown_watch %}{{ t('verdict_crowns', n=verdict.crown_watch|length) }}{% endif %}
+                {% set extra = verdict.watch|reject('in', verdict.crown_watch)|list %}
                 {% if extra %}{{ t('verdict_weaker', n=extra|length) }}{% endif %}
                 {% if not verdict.flagged %}{{ t('verdict_clear') }}{% endif %}
+                {% if verdict.widespread %}{{ t('verdict_widespread_body') }}{% endif %}
                 {% if verdict.basis == 'few' %}{{ t('verdict_few', n=verdict.covered) }}{% endif %}
               {%- endif %}
               {% if not pins %}{{ t('verdict_no_gps') }}{% endif %}
@@ -236,8 +236,10 @@
         <div class="tech-stats">
           Plant reading (90th percentile per photo): typical {{ signed(verdict.typical) }}
           {%- if o %}, spread {{ '%.3f'|format(o.spread) }}, flagged below {{ signed(o.cut) }}{% endif %}.
-          Crowns (brightest 10% in NIR) with ≥1% below {{ '%.2f'|format(flight.thresholds.healthy) }}:
-          {{ verdict.crowns|length }} photos. Weaker than the rest: {{ verdict.weaker|length }}.
+          Crowns (brightest 10% in NIR): {{ verdict.urgent|length }} photos at ≥5% below
+          {{ '%.2f'|format(flight.thresholds.healthy) }} or ≥0.1% below
+          {{ '%.2f'|format(flight.thresholds.moderate) }} (Silipin agad);
+          {{ verdict.crown_watch|length }} at ≥1% (Dapat tingnan). Weaker than the rest: {{ verdict.weaker|length }}.
         </div>
       {% endif %}
       {% for k in checks %}

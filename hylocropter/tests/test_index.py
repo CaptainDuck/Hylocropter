@@ -527,3 +527,14 @@ def test_soil_below_the_line_does_not_count_against_the_crown():
 def test_stats_carry_the_plant_reading():
     b = np.linspace(0, 1, 101)
     assert bndvi.bndvi_stats(b)["p90"] == pytest.approx(0.9)
+
+
+def test_crown_reports_red_separately():
+    nir = np.zeros((10, 10))
+    nir[0, :] = 200
+    b = np.full((10, 10), 0.40)
+    b[0, :2] = 0.05                       # red
+    b[0, 2:4] = 0.20                      # orange
+    s = bndvi.crown_stats(b, nir, 0.30, threshold_moderate=0.10)
+    assert s["crown_weak_pct"] == pytest.approx(40.0)
+    assert s["crown_red_pct"] == pytest.approx(20.0)

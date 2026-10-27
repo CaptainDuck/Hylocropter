@@ -1025,7 +1025,9 @@ def test_orange_on_a_crown_flags_that_photo():
     caps[3] = _plant("c3", 0.44, crown=16.0)
     caps[7] = _plant("c7", 0.44, crown=2.5)
     v = flights.verdict(caps, TH)
-    assert v["level"] == "moderate" and v["flagged"] == ["c3", "c7"]
+    # 16% is "Silipin agad", 2.5% "Dapat tingnan"; worst first.
+    assert v["level"] == "stressed" and v["flagged"] == ["c3", "c7"]
+    assert v["urgent"] == ["c3"] and v["watch"] == ["c7"]
     assert not v["widespread"]
 
 
@@ -1066,3 +1068,25 @@ def test_too_few_photos_still_checks_the_crowns():
     caps = [_plant("a", 0.44), _plant("b", 0.44, crown=5.0)]
     v = flights.verdict(caps, TH)
     assert v["basis"] == "few" and v["flagged"] == ["b"]
+
+
+def test_three_statuses_from_the_crown():
+    def level(weak, red=0.0, weaker=False):
+        c = _plant("x", 0.44, crown=weak)
+        c["stats"]["crown_red_pct"] = red
+        return flights.photo_level(c, weaker)
+    assert level(0.5) == "healthy"
+    assert level(1.0) == "moderate"          # Dapat tingnan from 1%
+    assert level(4.9) == "moderate"
+    assert level(5.0) == "stressed"          # Silipin agad from 5%
+    assert level(0.5, red=0.2) == "stressed"  # any real red on the plant
+    assert level(0.5, red=0.05) == "healthy"  # a few stray pixels are not red
+    assert level(0.5, weaker=True) == "moderate"
+
+
+def test_the_verdict_takes_the_worst_status():
+    caps = [_plant(f"c{i}", 0.44) for i in range(20)]
+    caps[2] = _plant("c2", 0.44, crown=2.0)
+    v = flights.verdict(caps, TH)
+    assert v["level"] == "moderate" and v["urgent"] == [] and v["watch"] == ["c2"]
+    assert v["levels"]["c0"] == "healthy"

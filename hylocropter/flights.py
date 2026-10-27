@@ -230,8 +230,9 @@ class Store:
             return flight
 
     def backfill_plant_readings(self):
-        """Work out the plant readings (`p90`, `crown_weak_pct`, `crown_median`)
-        for captures recorded before they existed.
+        """Work out the plant readings (`p90`, `crown_weak_pct`,
+        `crown_red_pct`, `crown_median`) for captures recorded before they
+        existed.
 
         One-off and slow -- each needs its saved BNDVI array and its raw JPEG,
         about a second apiece on the Pi -- so app.py runs it in a background
@@ -244,7 +245,7 @@ class Store:
         from PIL import Image
 
         todo = [c for c in self.captures(newest_first=False)
-                if has_reading(c) and "crown_weak_pct" not in c["stats"]
+                if has_reading(c) and "crown_red_pct" not in c["stats"]
                 and c.get("files", {}).get("array")
                 and not (c["stats"].get("masked_pct") or 0)]
         done = 0
@@ -253,15 +254,16 @@ class Store:
             arr, raw = folder / c["files"]["array"], folder / c["files"].get("raw", "")
             if not arr.exists() or not raw.is_file():
                 continue
-            th = (c.get("settings") or {}).get(
-                "threshold_healthy", bndvi.DEFAULT_THRESHOLD_HEALTHY)
+            s = c.get("settings") or {}
+            th = s.get("threshold_healthy", bndvi.DEFAULT_THRESHOLD_HEALTHY)
+            tm = s.get("threshold_moderate", bndvi.DEFAULT_THRESHOLD_MODERATE)
             try:
                 b = np.load(arr)["bndvi"]
                 nir = np.asarray(Image.open(raw))[:, :, 0]
                 if nir.shape != b.shape:
                     continue
                 st = {"p90": bndvi.bndvi_stats(b)["p90"]}
-                st.update(bndvi.crown_stats(b, nir, th))
+                st.update(bndvi.crown_stats(b, nir, th, threshold_moderate=tm))
             except (OSError, ValueError, KeyError) as e:
                 log.warning("plant reading for %s skipped: %s", c["id"], e)
                 continue
@@ -1305,22 +1307,6 @@ OUTLIER_FLOOR = 0.015
 # Fewer photos than this and "typical" means too little to compare against.
 OUTLIER_MIN_PHOTOS = 8
 
-# A photo is also flagged when at least this share of its crown (the brightest
-# tenth in NIR -- bndvi.crown_stats) reads below the healthy line: orange or red
-# on the plants themselves. Healthy flights sit at 0.1% or less; the 9 Oct
-# flight, with orange visible on its crowns, at 2.5% typical and 16% at worst.
-# Placeholder like the rest -- RESEARCH-GAPS.md §13.
-CROWN_WEAK_MIN_PCT = 1.0
-
-
-def crown_flagged(captures, min_pct=CROWN_WEAK_MIN_PCT):
-    """Photos with orange or red on the plants, most first."""
-    rows = [c for c in captures if has_reading(c)
-            and (c["stats"].get("crown_weak_pct") or 0) >= min_pct]
-    return [c["id"] for c in sorted(rows,
-                                    key=lambda c: -c["stats"]["crown_weak_pct"])]
-
-
 def plant_outliers(captures, spreads=OUTLIER_SPREADS, floor=OUTLIER_FLOOR,
                    min_photos=OUTLIER_MIN_PHOTOS):
     """Photos whose plants read clearly weaker than the rest of the flight.
@@ -1352,6 +1338,43 @@ def plant_outliers(captures, spreads=OUTLIER_SPREADS, floor=OUTLIER_FLOOR,
             "gaps": gaps, "flagged": flagged}
 
 
+# A photo's status comes from its crown (the brightest tenth in NIR --
+# bndvi.crown_stats): how much of it reads orange or red, below the healthy
+# line, and how much reads red, below the stressed one.
+#
+#   Okay           under CROWN_WEAK_MIN_PCT orange or red
+#   Dapat tingnan  from CROWN_WEAK_MIN_PCT, or plants clearly weaker than the
+#                  rest of the flight (plant_outliers)
+#   Silipin agad   from CROWN_URGENT_PCT, or at least CROWN_RED_MIN_PCT red
+#
+# Healthy flights sit at 0.1% orange or less; the 9 Oct flight at 2.5% typical
+# and 16% at worst, 22 of its 63 photos at 5% or more. No crown on any flight
+# so far has any red, so the red floor only keeps a few stray pixels from
+# deciding it. Placeholders, not field-tested -- RESEARCH-GAPS.md §13.
+CROWN_WEAK_MIN_PCT = 1.0
+CROWN_URGENT_PCT = 5.0
+CROWN_RED_MIN_PCT = 0.1
+
+LEVEL_RANK = {"healthy": 0, "moderate": 1, "stressed": 2}
+
+
+def photo_level(capture, weaker=False):
+    """Okay / worth a look / needs a look now, as healthy / moderate /
+    stressed -- the same names the bands use, so the colours line up. None
+    for a photo that measured nothing or predates the crown reading."""
+    if not has_reading(capture):
+        return None
+    st = capture["stats"]
+    if st.get("crown_weak_pct") is None:
+        return "moderate" if weaker else None
+    if (st["crown_weak_pct"] >= CROWN_URGENT_PCT
+            or (st.get("crown_red_pct") or 0) >= CROWN_RED_MIN_PCT):
+        return "stressed"
+    if st["crown_weak_pct"] >= CROWN_WEAK_MIN_PCT or weaker:
+        return "moderate"
+    return "healthy"
+
+
 def verdict(captures, thresholds=None):
     """The farm-level status a farmer reads first.
 
@@ -1363,10 +1386,9 @@ def verdict(captures, thresholds=None):
 
     ``basis`` says how it was decided:
 
-    * ``outliers`` -- the normal case; ``level`` is moderate when any photo is
-      flagged, healthy when none is. A photo is flagged for orange or red on
-      its crown (``crowns``, crown_flagged) or for plants reading clearly
-      weaker than the rest of the flight (``weaker``, plant_outliers).
+    * ``outliers`` -- the normal case; ``level`` is the worst photo_level of
+      any photo: stressed ("Silipin agad", ``urgent``), moderate ("Dapat
+      tingnan", ``watch``) or healthy. ``levels`` has every photo's.
     * ``low`` -- the flight's *typical* plant reading is itself at or below the
       healthy line. Nothing stands out because everything is down, which a
       within-flight comparison can't see, so this is checked first.
@@ -1395,18 +1417,33 @@ def verdict(captures, thresholds=None):
 
     typical = plants[len(plants) // 2]
     out = plant_outliers(readings)
-    crowns = crown_flagged(readings)
     weaker = (out or {}).get("flagged") or []
-    # Orange on the crowns first -- it is what the farmer can see -- then the
-    # photos that only stand out by comparison.
-    flagged = crowns + [cid for cid in weaker if cid not in crowns]
-    base.update(typical=typical, outliers=out, crowns=crowns, weaker=weaker,
-                flagged=flagged)
+    levels = {c["id"]: photo_level(c, c["id"] in weaker) for c in readings}
+
+    def worst_first(c):
+        return (-LEVEL_RANK.get(levels[c["id"]], 0),
+                -(c["stats"].get("crown_weak_pct") or 0),
+                -((out or {}).get("gaps", {}).get(c["id"]) or 0))
+
+    ranked = sorted((c for c in readings
+                     if levels[c["id"]] in ("moderate", "stressed")),
+                    key=worst_first)
+    flagged = [c["id"] for c in ranked]
+    urgent = [cid for cid in flagged if levels[cid] == "stressed"]
+    watch = [cid for cid in flagged if levels[cid] == "moderate"]
+    # The "watch" photos that got there by their crown, as opposed to only
+    # standing out by comparison -- said differently on the page.
+    crown_watch = [c["id"] for c in readings if c["id"] in watch
+                   and (c["stats"].get("crown_weak_pct") or 0) >= CROWN_WEAK_MIN_PCT]
+    base.update(typical=typical, outliers=out, weaker=weaker, levels=levels,
+                flagged=flagged, urgent=urgent, watch=watch,
+                crown_watch=crown_watch)
     if typical <= t_healthy:
         return dict(base, level=bndvi.classify(typical, t_healthy, t_moderate),
                     basis="low")
     # When half the photos or more are flagged, a list to visit is the wrong
     # answer: the whole block is affected, and the page says so.
-    return dict(base, level="moderate" if flagged else "healthy",
+    return dict(base,
+                level="stressed" if urgent else ("moderate" if watch else "healthy"),
                 basis="few" if out is None else "outliers",
                 widespread=len(flagged) * 2 >= len(readings))

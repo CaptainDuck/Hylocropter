@@ -5,8 +5,8 @@
  * photo's *plants* say -- not the soil between them, which reads yellow on
  * every flight -- and answers hc:photo-selected so the map rings the patch.
  *
- * A photo is flagged (flights.verdict) for orange or red on its crown, or for
- * plants reading clearly weaker than the rest of the flight. The page opens on
+ * A photo's status (flights.photo_level) is Okay, Dapat tingnan or Silipin
+ * agad, from how much of its crown reads orange or red. The page opens on
  * the first flagged photo, and the verdict's "go through them" button steps
  * through the rest; with nothing flagged it opens on the lowest plant reading
  * and says that is still normal.
@@ -31,6 +31,8 @@
     .filter(Boolean);
 
   const $ = function (id) { return document.getElementById(id); };
+  // The statuses' colours, as on the map's pins and in the legend.
+  const LEVEL_COLOUR = { healthy: '#2f8f3e', moderate: '#e0a020', stressed: '#c1442e' };
 
   function say(key, vars) {
     let text = S[key] || key;
@@ -71,17 +73,16 @@
       n: p.number || '?', time: clock12(p.seconds || p.time)
     });
     const measured = has(p.mean);
+    const level = p.level || 'healthy';
     const dot = $('sq-dot');
-    dot.className = 'square-dot is-' + (!measured ? 'none' : (p.flag ? 'moderate' : 'healthy'));
-    dot.style.background = !measured ? '' : (p.flag ? '#e0a020' : '#2f8f3e');
+    dot.className = 'square-dot is-' + (!measured ? 'none' : level);
+    dot.style.background = !measured ? '' : LEVEL_COLOUR[level];
     // What got it flagged, not a BNDVI figure: "+0.44" beside "worth a look"
     // reads as healthy and contradicts the label.
     $('sq-short').textContent = !measured ? '—'
       : (has(p.crown_weak) ? share(p.crown_weak) + '%' : '');
-    $('sq-name').textContent = !measured ? say('no_reading')
-      : (p.flag ? say('flagged_name') : say('healthy'));
-    $('sq-mean').textContent = !measured ? ''
-      : say(p.flag ? 'moderate_mean' : 'healthy_mean');
+    $('sq-name').textContent = !measured ? say('no_reading') : say(level);
+    $('sq-mean').textContent = !measured ? '' : say(level + '_mean');
     $('sq-detail').textContent = p.footprint && measured
       ? say('cell_detail', {
         w: Math.round(p.footprint.width_m), h: Math.round(p.footprint.height_m),
@@ -91,6 +92,7 @@
 
     const why2 = [];
     if (has(p.crown_weak)) why2.push(say('photo_crown', { w: share(p.crown_weak) }));
+    if (p.crown_red > 0) why2.push(say('photo_crown_red', { r: share(p.crown_red) }));
     if (p.weaker) why2.push(say('photo_weaker'));
     $('sq-share').textContent = why2.join(' ');
     $('sq-open').href = '/capture/' + p.id;

@@ -167,6 +167,10 @@
 
 .map-card { padding: var(--space-2); gap: var(--space-2); overflow: hidden; }
 .map-frame { position: relative; border-radius: 22px; overflow: hidden; }
+.map-empty {
+  left: 50%; top: 70px; transform: translateX(-50%); width: min(320px, 80%);
+  text-align: center; font-size: 15px; line-height: 1.45; padding: 14px 18px;
+}
 #plot-map { height: min(58vh, 460px); min-height: 300px; width: 100%; }
 .leaflet-container { font-family: var(--font-body); background: var(--color-neutral-200); }
 .leaflet-control-attribution { font-size: 9px; background: rgba(245, 234, 216, .8); }
@@ -193,9 +197,11 @@
 .legend-key-text span { font-size: 11.5px;
   color: color-mix(in srgb, var(--color-text) 65%, transparent); }
 .legend-swatch.is-green { background: rgb(87, 168, 63); }
-.legend-swatch.is-yellow { background: rgb(242, 227, 74); }
-.legend-swatch.is-red { background: linear-gradient(135deg, rgb(224, 160, 32), rgb(193, 68, 46)); }
-.legend-swatch.is-flag { background: transparent; border: 2.5px solid #c1442e; }
+.legend-swatch.is-yellow { background: linear-gradient(135deg, rgb(242, 227, 74), #e0a020); }
+.legend-swatch.is-red { background: linear-gradient(135deg, #d9772b, #c1442e); }
+.legend-status-note { font-size: 11.5px; line-height: 1.4; max-width: 230px;
+  padding-top: 6px; border-top: 1px solid var(--color-divider);
+  color: color-mix(in srgb, var(--color-text) 65%, transparent); }
 .legend-share { color: color-mix(in srgb, var(--color-text) 55%, transparent);
   font-variant-numeric: tabular-nums; }
 

@@ -335,7 +335,10 @@ def page_map():
             "plant": (c.get("stats") or {}).get("p90"),
             "gap": (outliers or {}).get("gaps", {}).get(c["id"]),
             "flag": c["id"] in ((verdict or {}).get("flagged") or ()),
+            # Okay / Dapat tingnan / Silipin agad (flights.photo_level).
+            "level": ((verdict or {}).get("levels") or {}).get(c["id"]),
             "crown_weak": (c.get("stats") or {}).get("crown_weak_pct"),
+            "crown_red": (c.get("stats") or {}).get("crown_red_pct"),
             "crown_median": (c.get("stats") or {}).get("crown_median"),
             "weaker": c["id"] in ((verdict or {}).get("weaker") or ()),
             "raw": (url_for("captures_file", filename=c["files"]["raw"])
@@ -367,7 +370,7 @@ def page_map():
         captures=captures, pins=pins, previous=previous,
         verdict=verdict, checks=checks, comparison=comparison,
         pill_levels=pill_levels,
-        flagged_ids=(verdict or {}).get("flagged") if flight else None,
+        photo_levels=((verdict or {}).get("levels") or {}) if flight else None,
         js_strings=i18n.bundle(_lang(), i18n.STRINGS.keys()),
         ground_captures=store.ground_captures(),
         **_shell())
@@ -506,7 +509,7 @@ def page_capture(capture_id):
     if record is None:
         return _handle_404()
     return render_template("capture.html", view="capture", r=record,
-                           crown_min=flights_mod.CROWN_WEAK_MIN_PCT,
+                           level=flights_mod.photo_level(record),
                            flight=store.flight(record.get("flight_id")),
                            **_shell())
 

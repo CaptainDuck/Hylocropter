@@ -54,6 +54,7 @@
   let overlay = null;
   let opacity = 0.82;
   let showPins = true;
+  let showOutlines = true;
   const mosaicCache = {};
 
   // The page's words, in its language (i18n.py). Absent before the first
@@ -709,17 +710,24 @@
   let outlines = null;
   function syncOutlines() {
     if (!outlines) {
-      // Flagged photos in red and drawn last, so their whole edge shows.
+      // Flagged photos in their status colour, worst drawn last so its whole
+      // edge shows over a neighbour's.
+      const RANK = { moderate: 1, stressed: 2 };
       const shapes = segments().shapes.slice().sort(function (a, b) {
-        return (a.p.flag ? 1 : 0) - (b.p.flag ? 1 : 0);
+        return (RANK[a.p.level] || 0) - (RANK[b.p.level] || 0);
       });
       outlines = L.layerGroup(shapes.map(function (sh) {
         return L.polygon(sh.latlngs, sh.p.flag
-          ? { color: '#c1442e', weight: 2.5, opacity: 1, fill: false, interactive: false }
+          ? { color: LEVEL_COLOUR[sh.p.level] || LEVEL_COLOUR.moderate,
+              weight: sh.p.level === 'stressed' ? 3 : 2.5, opacity: 1,
+              fill: false, interactive: false }
           : { color: '#f5ead8', weight: 1, opacity: 0.75, fill: false, interactive: false });
       }));
     }
-    outlines.addTo(map);
+    // Tapping still works with them hidden: a tap is matched against the
+    // patches themselves, not these lines.
+    if (showOutlines) outlines.addTo(map);
+    else map.removeLayer(outlines);
   }
 
   // Without footprints (no altitude recorded) there is no heatmap to draw;
@@ -734,7 +742,7 @@
     overlay = L.imageOverlay(mosaicCache.url, mosaicBounds, {
       opacity: opacity, interactive: false, className: 'mosaic-layer'
     }).addTo(map);
-    outlines.eachLayer(function (l) { l.bringToFront(); });
+    if (showOutlines) outlines.eachLayer(function (l) { l.bringToFront(); });
     if (selRing) selRing.bringToFront();
   }
 
@@ -743,19 +751,26 @@
   const pinLayer = L.layerGroup();
   const trackLayer = L.layerGroup();
 
+  // The photo statuses' colours (flights.photo_level): green Okay, amber
+  // Dapat tingnan, red Silipin agad. Pins, outlines and the legend share them.
+  const LEVEL_COLOUR = { healthy: '#2f8f3e', moderate: '#e0a020', stressed: '#c1442e' };
+
+  function levelLabel(p) {
+    if (p.mean === null || p.mean === undefined) return say('no_reading', 'No reading');
+    return say(p.level || 'healthy', p.level || 'healthy');
+  }
+
   function buildPins() {
-    // Red for a photo the verdict flags (flights.verdict), green otherwise --
-    // the pin says what the card will say, not the photo's soil-heavy mean.
+    // The pin says what the card will say, not the photo's soil-heavy mean.
     const track = [];
     pins.forEach(function (p) {
       track.push([p.lat, p.lon]);
       const measured = p.mean !== null && p.mean !== undefined;
       const marker = L.circleMarker([p.lat, p.lon], {
         radius: p.flag ? 7 : 6, weight: 2, color: '#f5ead8', fillOpacity: 0.95,
-        fillColor: !measured ? '#82796a' : (p.flag ? '#c1442e' : '#2f8f3e')
+        fillColor: !measured ? '#82796a' : LEVEL_COLOUR[p.level || 'healthy']
       });
-      const label = !measured ? say('no_reading', 'No reading')
-        : (p.flag ? say('flagged_name', 'Worth a look') : say('healthy', 'Doing well'));
+      const label = levelLabel(p);
       marker.bindTooltip(
         '<strong>' + p.time + '</strong> · ' + label +
         (p.crown_weak === null || p.crown_weak === undefined ? ''
@@ -813,7 +828,9 @@
   /* ── hover readout ──────────────────────────────────────────────────────── */
 
   const hint = document.getElementById('map-hint');
-  const IDLE_HINT = flight
+  const IDLE_HINT = flight && !pins.length
+    ? (document.querySelector('.map-empty') || {}).textContent || ''
+    : flight
     ? say('map_hint', 'Tap a spot on the map to have it explained below.')
     : 'Scroll to zoom, drag to pan. The dashed line is as far as the offline ' +
       'imagery goes.';
@@ -858,10 +875,8 @@
   function describe(latlng) {
     const p = photoAt(latlng);
     if (!p) return IDLE_HINT;
-    const measured = p.mean !== null && p.mean !== undefined;
     return say('where', 'Photo #{n} · {time}', { n: p.number || '?', time: p.time }) +
-      ' — ' + (!measured ? say('no_reading', 'No reading')
-        : (p.flag ? say('flagged_name', 'Worth a look') : say('healthy', 'Doing well'))) +
+      ' — ' + levelLabel(p) +
       (p.crown_weak === null || p.crown_weak === undefined ? '' : ' · ' + crownShare(p));
   }
 
@@ -932,6 +947,16 @@
       syncPins();
     });
     pinToggle.closest('.map-toggle').hidden = pins.length === 0;
+  }
+
+  const outlineToggle = document.getElementById('map-show-outlines');
+  if (outlineToggle) {
+    outlineToggle.addEventListener('change', function () {
+      showOutlines = outlineToggle.checked;
+      if (outlines) syncOutlines();
+      if (selRing) selRing.bringToFront();
+    });
+    outlineToggle.closest('.map-toggle').hidden = !hasFootprints;
   }
 
   /* ── live location ──────────────────────────────────────────────────────

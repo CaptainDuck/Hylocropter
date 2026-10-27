@@ -133,21 +133,25 @@ SATURATED = 254
 
 
 def crown_stats(bndvi, nir, threshold_healthy=DEFAULT_THRESHOLD_HEALTHY,
-                mask=None):
-    """How much of the crown reads below the healthy line.
+                mask=None, threshold_moderate=DEFAULT_THRESHOLD_MODERATE):
+    """How much of the crown reads below the healthy line, and below the
+    stressed one.
 
     `nir` is the NIR (red Bayer) channel of the same frame. Returns
-    ``{"crown_weak_pct", "crown_median"}``, or Nones when nothing is left.
+    ``{"crown_weak_pct", "crown_red_pct", "crown_median"}`` -- orange or red,
+    red only, and the crown's median -- or Nones when nothing is left.
     """
+    empty = {"crown_weak_pct": None, "crown_red_pct": None, "crown_median": None}
     valid = np.ones(bndvi.shape, bool) if mask is None else ~mask
     if not valid.any():
-        return {"crown_weak_pct": None, "crown_median": None}
+        return empty
     level = np.percentile(nir[valid], CROWN_PERCENTILE)
     crown = valid & (nir >= level)
     v = bndvi[crown]
     if not v.size:
-        return {"crown_weak_pct": None, "crown_median": None}
+        return empty
     return {"crown_weak_pct": float(np.mean(v <= threshold_healthy) * 100),
+            "crown_red_pct": float(np.mean(v < threshold_moderate) * 100),
             "crown_median": float(np.median(v))}
 
 # How long to let the camera's own AE and AWB settle before reading back what
@@ -1307,7 +1311,8 @@ def capture_and_analyse(
     if dng_name:
         files["dng"] = dng_name
     stats = bndvi_stats(bndvi, threshold_healthy, threshold_moderate, mask=mask)
-    stats.update(crown_stats(bndvi, rgb[:, :, 0], threshold_healthy, mask=mask))
+    stats.update(crown_stats(bndvi, rgb[:, :, 0], threshold_healthy, mask=mask,
+                             threshold_moderate=threshold_moderate))
 
     return {
         "id": capture_id,

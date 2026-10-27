@@ -25,13 +25,10 @@
       <p class="page-sub text-muted" style="font-size:12.5px">{{ r.clock|clock_note }}</p>
     {% endif %}
   </div>
-  {# Same rule as the flight's results: orange or red on the plants is worth a
-     look; the mean's band would call a photo with an orange crown healthy. #}
-  {% set cw = (r.stats or {}).get('crown_weak_pct') %}
-  {% if cw is not none %}
-    <span class="tag {{ 'tag-moderate' if cw >= crown_min else 'tag-healthy' }}"
-          style="font-size:14px;padding:7px 16px">
-      {{- t('flagged_name') if cw >= crown_min else t('healthy') -}}</span>
+  {# Same rule as the flight's results (flights.photo_level): the mean's band
+     would call a photo with an orange crown healthy. #}
+  {% if level %}
+    <span class="tag tag-{{ level }}" style="font-size:14px;padding:7px 16px">{{ t(level) }}</span>
   {% else %}
     {{ band_tag(r.classification, 'style="font-size:14px;padding:7px 16px"') }}
   {% endif %}
